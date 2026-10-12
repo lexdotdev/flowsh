@@ -25,7 +25,7 @@ The leading letter groups the work by area:
 | A3.2 | A knowledge-base class never lowers the effect-derived severity (raise-only). | Done |
 | A3.3 | A destructive flag that leaves no effect trail is still surfaced. | Done |
 | A6 | **POSIX variant.** A case declared `posix` is analysed in the POSIX variant, and the report is stamped `posix`. | Done |
-| A9 | **Public embedding API.** The `api` package re-exports the facade as the sole supported import path for external Go modules ([ADR-0010](../../specs/decisions/0010-public-embedding-api.md)). | Done |
+| A9 | **Public embedding API.** The `api` package re-exports the facade as the supported analysis import path for external Go modules ([ADR-0010](../../specs/decisions/0010-public-embedding-api.md)). | Done |
 
 ## B — Knowledge-base coverage
 
