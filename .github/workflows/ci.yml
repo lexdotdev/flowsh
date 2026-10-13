@@ -53,7 +53,7 @@ jobs:
       - name: lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13
+          version: v2.14.0
 
       # No dead code: every symbol must be reachable from a command path or a
       # test. `deadcode -test` prints the unreachable set, which must be empty.

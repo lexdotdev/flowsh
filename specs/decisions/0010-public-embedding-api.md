@@ -4,6 +4,10 @@
 
 Accepted
 
+Amended by [0017](./0017-report-policy-package.md) for the sole-public-surface
+framing only; the type-alias analysis API, report-contract versioning, and
+separation from the CLI stand.
+
 > **Historical record.** This decision describes the embedding contract with the
 > report-contract tag as `flowsh/v1`. The live tag is now `flowsh/v3` (see
 > [`specs/contracts/report-json.md`](../contracts/report-json.md) and

@@ -43,6 +43,7 @@ specs/
 │   │   └── abstract-exec.md        abstract execution detail
 │   ├── powershell-frontend.md      the PowerShell frontend (front/ps)
 │   ├── analysis-report.md          composition facade + report + corpus harness
+│   ├── policy.md                   configurable report decisions
 │   └── cli.md                      the CLI (cmd/flowsh)
 │
 ├── contracts/                      interfaces between layers
@@ -75,6 +76,7 @@ Specs are organized by domain, never by this layout. The mapping of a domain to 
 | `domains/bash-frontend/` | `front/bash/` |
 | `domains/powershell-frontend.md` | `front/ps/` |
 | `domains/analysis-report.md` | `internal/analysis/`, `internal/corpus/`, `api/` |
+| `domains/policy.md` | `policy/` |
 | `domains/cli.md` | `cmd/flowsh/` |
 
 ## Naming Conventions
