@@ -52,6 +52,9 @@ func TestInvalidConfiguration(t *testing.T) {
 
 func TestInvalidReportsDeny(t *testing.T) {
 	p := newPolicy(t, policy.Config{Unknown: policy.Review})
+	want := policy.Decision{Action: policy.Deny, Matches: []policy.Match{
+		{Code: "invalid_report", Action: policy.Deny},
+	}}
 	mutations := []struct {
 		name  string
 		apply func(*api.Report)
@@ -63,19 +66,21 @@ func TestInvalidReportsDeny(t *testing.T) {
 		{"effect", func(r *api.Report) { r.Effects[0].Kind = "unknown" }},
 		{"mode", func(r *api.Report) { r.Effects[0].Mode = "unknown" }},
 		{"grade", func(r *api.Report) { r.Score.Grade = -1 }},
-		{"uncovered", func(r *api.Report) { r.Effects = nil }},
+		{"uncovered tool", func(r *api.Report) { r.Effects = nil; r.Tool = "other" }},
+		{"uncovered language", func(r *api.Report) { r.Effects = nil; r.Lang = "unknown" }},
+		{"uncovered grade", func(r *api.Report) { r.Effects = nil; r.Score.Grade = -1 }},
 	}
 	for _, tc := range mutations {
 		t.Run(tc.name, func(t *testing.T) {
 			r := report(engine.KindFSRead)
 			tc.apply(r)
-			if d := p.Evaluate(r); d.Action != policy.Deny || d.Allowed() {
-				t.Fatalf("invalid report returned %+v", d)
+			if got := p.Evaluate(r); got.Action != want.Action || !slices.Equal(got.Matches, want.Matches) {
+				t.Fatalf("got %+v, want %+v", got, want)
 			}
 		})
 	}
-	if d := p.Evaluate(nil); d.Action != policy.Deny {
-		t.Fatalf("nil report returned %+v", d)
+	if got := p.Evaluate(nil); got.Action != want.Action || !slices.Equal(got.Matches, want.Matches) {
+		t.Fatalf("nil report returned %+v, want %+v", got, want)
 	}
 	for _, p := range []*policy.Policy{nil, {}} {
 		if d := p.Evaluate(report(engine.KindFSRead)); d.Action != policy.Deny {
@@ -84,6 +89,30 @@ func TestInvalidReportsDeny(t *testing.T) {
 	}
 	if (policy.Decision{}).Allowed() {
 		t.Fatal("zero decision granted permission")
+	}
+}
+
+func TestNoEffectReportsDenyAsUncovered(t *testing.T) {
+	p := newPolicy(t, policy.Config{})
+	want := policy.Decision{Action: policy.Deny, Matches: []policy.Match{
+		{Code: "uncovered_report", Action: policy.Deny},
+	}}
+	for _, src := range []string{"true", ":"} {
+		t.Run(src, func(t *testing.T) {
+			r, err := api.Analyze(api.LangBash, src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Validate(); err != nil {
+				t.Fatalf("no-effect report is invalid: %v", err)
+			}
+			if len(r.Effects) != 0 || r.Top || r.Conservative || r.Covered() {
+				t.Fatal("expected a no-effect report without uncertainty flags or coverage")
+			}
+			if got := p.Evaluate(r); got.Action != want.Action || !slices.Equal(got.Matches, want.Matches) {
+				t.Fatalf("got %+v, want %+v", got, want)
+			}
+		})
 	}
 }
 

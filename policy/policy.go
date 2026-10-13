@@ -94,13 +94,16 @@ func (p *Policy) Evaluate(r *api.Report) Decision {
 	}
 	if r == nil || r.Tool != api.ToolName || r.ToolVersion != api.ToolVersion ||
 		r.SchemaVersion != api.SchemaVersion || r.Validate() != nil ||
-		!r.Score.Grade.Valid() || !r.Covered() {
+		!r.Score.Grade.Valid() {
 		return denied("invalid_report")
 	}
 	switch api.Lang(r.Lang) {
 	case api.LangBash, api.LangPOSIX, api.LangPowerShell:
 	default:
 		return denied("invalid_report")
+	}
+	if !r.Covered() {
+		return denied("uncovered_report")
 	}
 	matched := make(map[string]Action)
 	add := func(code string, action Action, applies bool) {

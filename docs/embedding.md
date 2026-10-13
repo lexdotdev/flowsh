@@ -182,15 +182,17 @@ if !decision.Allowed() {
 
 The example also imports `fmt` and `github.com/v0lka/flowsh/engine` for effect-kind constants. Reuse the constructed policy across calls; it copies its maps and is safe for concurrent evaluation of reports that callers leave unchanged.
 
-Configuration defaults are `Unknown: Deny`, `Conservative: Review`, `Exfiltration: Deny`, `Cradle: Review`, and `Ingest: Allow`. `Effects` and `Grades` default to empty maps. Grade entries match exact grades; to restrict High and Critical, list both. These defaults are a starting point, **not a complete security policy**: fully modelled operations with no restrictive match return Allow, including operations whose effects the caller has not configured. Choose rules for the caller's environment and threat model.
+Configuration defaults are `Unknown: Deny`, `Conservative: Review`, `Exfiltration: Deny`, `Cradle: Review`, and `Ingest: Allow`. `Effects` and `Grades` default to empty maps. Grade entries match exact grades; to restrict High and Critical, list both. These defaults are a starting point, **not a complete security policy**: valid, compatible reports with `Covered() == true` and no restrictive match return Allow, including operations whose effects the caller has not configured. Choose rules for the caller's environment and threat model.
 
 All matching restrictions apply, with `deny > review > allow`. An Allow entry disables only that rule; it cannot override another restriction. Unknown and conservative analysis cannot be configured to Allow. Unknown includes both `Report.Top` and `Report.HasTop()`. Missing, incompatible, invalid, or uncovered reports always deny. A nil or zero policy also denies; a zero decision is never allowed. Flow rules use the report's `exfilPairs`, `cradleFlows`, and `ingestFlows`, not just co-occurring effect kinds.
+
+Valid no-effect reports can be uncovered: `api.Analyze(api.LangBash, "true")` and `api.Analyze(api.LangBash, ":")` return zero effects with `Top == false` and `Conservative == false`, so `Covered()` is false. Policy denies these benign no-op commands with `uncovered_report`. This coverage requirement applies even when analysis reports no uncertainty. Missing, incompatible, or invalid reports use `invalid_report`; nil or zero policies use `invalid_policy`. Report validity is checked before coverage, so an invalid report with no effects still uses `invalid_report`.
 
 Decisions contain sorted reason codes and actions without copying script text, targets, or report reasons. Inspect the original report for evidence and treat it as sensitive. A report received from an untrusted party is not authenticated by validation; use the report from your own analysis call.
 
 Policy cannot recover behaviour absent from analysis, inspect referenced files, or establish runtime confinement. For example, a container command with an unbounded CodeExec effect still requires review or denial. Command semantics belong in the analyser; tenant permissions, approval, runtime isolation, and enforcement remain the embedding application's responsibilities. Keep policy configuration outside the analysed source and the agent being guarded.
 
-See the [policy specification](../specs/domains/policy.md) for the full contract.
+See the [policy specification](../specs/domains/policy.md) for the full contract and [ADR-0017](../specs/decisions/0017-report-policy-package.md) for the decision to add a public policy layer alongside `api`.
 
 ## Limits
 
@@ -209,6 +211,7 @@ See the [policy specification](../specs/domains/policy.md) for the full contract
 - [JSON report reference](report-json.md) — the document `Report.Encode` emits.
 - [CLI user-guide](cli.md) — the other supported consumer of the facade.
 - [ADR-0010: Public embedding API](../specs/decisions/0010-public-embedding-api.md) — why `api/` is a type-alias re-export and how it is versioned.
+- [ADR-0017: Report policy package](../specs/decisions/0017-report-policy-package.md) — the optional public decision layer and its amendment to ADR-0010's sole-public-surface framing.
 - [Layer Architecture](../specs/architecture/layers.md) — where `api/` sits relative to the facade and the CLI.
 - [Analysis Report](../specs/domains/analysis-report.md) — the facade `api` re-exports.
 - [Report Contract](../specs/contracts/report-json.md) — the `flowsh/v3` envelope pinned across the boundary.

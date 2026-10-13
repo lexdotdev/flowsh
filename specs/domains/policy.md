@@ -23,8 +23,8 @@
 
 1. The caller constructs a policy from trusted configuration; invalid actions, effect kinds, and grades return an error.
 2. The caller analyses source through `api` and handles any error.
-3. `Evaluate` checks the report's tool, tool/schema versions, canonical language, effect validation, grade, and `Covered()` invariant. Failure returns Deny.
-4. All applicable rules contribute restrictions. Deny wins over Review, which wins over Allow. No restrictive match means Allow.
+3. `Evaluate` checks the report's tool, tool/schema versions, canonical language, effect validation, and grade. Failure returns Deny with `invalid_report`. It then checks `Covered()`; failure returns Deny with `uncovered_report`.
+4. For a valid, compatible, covered report, all applicable rules contribute restrictions. Deny wins over Review, which wins over Allow. No restrictive match means Allow.
 5. The caller enforces the decision and retains the original sensitive report as evidence if needed. `Allowed()` is true only for explicit Allow.
 
 ## Invariants
@@ -52,7 +52,9 @@
 | `Effects` | Empty | Valid effect kind to action |
 | `Grades` | Empty | Exact valid score grade to action; no implicit threshold |
 
-Signal reason codes are `unknown`, `conservative`, `exfiltration`, `cradle`, and `ingest`. Other matches use `effect:<kind>` and `grade:<grade>`. Unusable policies/reports return `invalid_policy`/`invalid_report` respectively. Empty scalar configuration fields receive defaults; empty map actions are errors.
+Signal reason codes are `unknown`, `conservative`, `exfiltration`, `cradle`, and `ingest`. Other matches use `effect:<kind>` and `grade:<grade>`. Nil/zero policies return `invalid_policy`; missing, invalid, or incompatible reports return `invalid_report`. Otherwise-valid reports with `Covered() == false` return `uncovered_report`. Validation precedes coverage, so invalid reports always use `invalid_report` even when uncovered. Empty scalar configuration fields receive defaults; empty map actions are errors.
+
+`Covered()` requires at least one effect, `Top`, or `Conservative`. Authentic reports for benign no-op commands such as Bash `true` and `:` have zero effects and neither flag; they pass validation but deny with `uncovered_report`. The coverage gate applies regardless of configured rules or the absence of uncertainty.
 
 Configuration is supplied in Go by the trusted caller; the package loads no files, environment variables, plugins, or remote rules. Default rules do not constitute a complete threat-model-specific policy. Allow means no configured restriction matched, not proof of safety. Review is not execution permission.
 
@@ -65,3 +67,4 @@ New reusable report predicates can be added here with validation, deterministic 
 - [Analysis Report](analysis-report.md) — the input report and its uncertainty signals.
 - [Layers](../architecture/layers.md) — policy depends on api and engine only.
 - [Conservatism](../architecture/conservatism.md) — unknown analysis remains visible.
+- [ADR-0017: Report policy package](../decisions/0017-report-policy-package.md) — the public policy layer and amendment to ADR-0010's sole-public-surface framing.
