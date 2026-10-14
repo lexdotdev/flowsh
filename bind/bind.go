@@ -82,6 +82,20 @@ type EnvAssign struct {
 	Pos engine.SourceLoc `json:"-"`
 }
 
+// Wrapper is one command wrapper that was peeled off a call (sudo, env, …),
+// outermost first. Name is the wrapper's own name; Options are the option
+// words it carried, verbatim and always literal (the normalizer consumes a
+// wrapper's option value only when it is statically known, so `sudo -u $U`
+// keeps `-u` with no value); Pos is the position of the wrapper's own name
+// word, so the elevation an effect-carrying wrapper implies can be traced back
+// to its token. The inner command's own Name and Args are what remains of the
+// statement.
+type Wrapper struct {
+	Name    string           `json:"name"`
+	Options []Arg            `json:"options,omitempty"`
+	Pos     engine.SourceLoc `json:"-"`
+}
+
 // Call is a frontend-agnostic normalized invocation: the effective program name
 // plus its argv, together with the shell context needed to resolve the name.
 type Call struct {
@@ -99,8 +113,11 @@ type Call struct {
 	Env  []EnvAssign `json:"env,omitempty"`
 
 	// Wrappers lists the command wrappers (sudo, env, …) peeled off the call,
-	// outermost first.
-	Wrappers []string `json:"wrappers,omitempty"`
+	// outermost first, each with the option words it carried and the position
+	// of its own name — so the binder can refine a wrapper whose
+	// knowledge-base entry declares PrivEsc (sudo) by the wrapper's own
+	// command line.
+	Wrappers []Wrapper `json:"wrappers,omitempty"`
 
 	// Funcs and Aliases hold the shell symbols visible at the call site, which
 	// resolution consults after builtins.
@@ -181,6 +198,24 @@ func (b *Binder) Bind(c *Call) *Result {
 		r.Derivations = ders
 		normalizeResult(r)
 		return r
+	}
+
+	// Wrapper elevation, before the inner command is resolved: a wrapper whose
+	// knowledge-base entry declares a PrivEsc parameter (sudo) elevates by its
+	// own command line, not by the inner command's — `sudo -u nobody touch /x`
+	// runs touch unprivileged, while bare `sudo touch /x` elevates to root.
+	for _, w := range c.Wrappers {
+		kw, ok := b.k.Command(w.Name)
+		if !ok || !declaresPrivEsc(kw) {
+			continue
+		}
+		e, atoms, fires, notes := wrapperElevation(kw, w, c.Pos.File)
+		r.Notes = append(r.Notes, notes...)
+		if !fires {
+			continue
+		}
+		raw = append(raw, e)
+		ders = append(ders, derive(e, atoms, ruleForKind(engine.KindPrivEsc)))
 	}
 
 	if !c.NamePresent {
@@ -570,6 +605,101 @@ func parseArgs(cmd *kb.Command, argv []Arg) ([]Arg, []match, []string) {
 		}
 	}
 	return operands, matches, unknown
+}
+
+// ===========================================================================
+// Wrapper elevation (refined -u)
+// ===========================================================================
+
+const (
+	// rootUser is the user `sudo` elevates to by default, and the user a
+	// literal `root` or `0` -u value names.
+	rootUser = "root"
+	// rootUID is the numeric spelling of root accepted by `sudo -u`.
+	rootUID = "0"
+)
+
+// declaresPrivEsc reports whether a knowledge-base command declares any
+// PrivEsc parameter — the predicate that makes the binder treat a peeled-off
+// wrapper as an elevation to refine by its own command line, rather than
+// transparent plumbing.
+func declaresPrivEsc(cmd *kb.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	for _, p := range cmd.Params {
+		if p.Effect.Kind == engine.KindPrivEsc {
+			return true
+		}
+	}
+	return false
+}
+
+// wrapperElevation binds a PrivEsc-declaring wrapper's own command line (its
+// option words against the wrapper's knowledge-base entry) and lowers it by the
+// refined -u doctrine:
+//
+//   - no -u/--user at all, or a literal root|0 value: the escalation is
+//     certain (Direct) and targets root;
+//   - a literal non-root value: the wrapped command runs unprivileged — no
+//     elevation fires, and a note says why;
+//   - a value that is missing or not statically known: the escalation is
+//     still certain, but its target user is unresolved — Direct over ⊤.
+//     Sound: sudo's -u never softens, and the ⊤ target is a target question,
+//     not unknown code execution, so Result.Conservative is never touched.
+//
+// Other PrivEsc options (-g/--group) neither decide nor elevate: only the
+// target user makes the call privileged (a bare `sudo -g wheel cmd` still runs
+// as root). The derivation cites the wrapper's own name, the -u token and its
+// value — all at the wrapper's position — so the why-trace names the concrete
+// premise. Unrecognized wrapper flags surface as a note, never silently.
+func wrapperElevation(cmd *kb.Command, w Wrapper, file string) (e engine.Effect, atoms []engine.Atom, fires bool, notes []string) {
+	_, matches, unknown := parseArgs(cmd, w.Options)
+	if len(unknown) > 0 {
+		notes = append(notes, w.Name+": unrecognized flag(s): "+strings.Join(dedup(unknown), " "))
+	}
+
+	loc := withFile(w.Pos, file)
+	atoms = []engine.Atom{commandAtom(w.Name, loc)}
+
+	var user *match
+	for i := range matches {
+		if matches[i].param.Effect.Kind != engine.KindPrivEsc {
+			continue
+		}
+		if matches[i].param.Spec == "-u" || matches[i].param.Spec == "--user" {
+			user = &matches[i]
+			break
+		}
+	}
+
+	target := engine.ScopeOf(rootUser)
+	if user != nil {
+		atoms = append(atoms, flagAtom(user.param.Spec, loc))
+		v := user.value
+		switch {
+		case !user.hasVal || !v.Literal || v.Value == "":
+			// The value was not statically known: the escalation is certain,
+			// its target user unknown (⊤).
+			target = engine.ScopeTop()
+		case v.Value == rootUser || v.Value == rootUID:
+			atoms = append(atoms, operandAtom(v.Value, loc))
+		default:
+			// A literal unprivileged user: no elevation at all.
+			notes = append(notes, w.Name+": target user "+quote(v.Value)+" is not root; no privilege escalation")
+			return engine.Effect{}, atoms, false, notes
+		}
+	}
+
+	e = engine.Effect{
+		Kind:       engine.KindPrivEsc,
+		Target:     target,
+		Mode:       engine.ModeDirect,
+		Certainty:  certaintyOf(engine.ModeDirect),
+		Taint:      engine.TaintBottom(),
+		Reversible: kb.DefaultReversible(engine.KindPrivEsc),
+	}
+	return e, atoms, true, notes
 }
 
 // lowerParam lowers one matched parameter into the effects it contributes. Most
@@ -1300,7 +1430,18 @@ func FromBash(cmd *bash.Command, prog *bash.Program) *Call {
 		c.Env = append(c.Env, ea)
 	}
 	for _, w := range cmd.Wrappers {
-		c.Wrappers = append(c.Wrappers, w.Name)
+		if w == nil {
+			continue
+		}
+		bw := Wrapper{Name: w.Name,
+			Pos: engine.SourceLoc{Line: w.Pos.Line, Col: w.Pos.Col}}
+		// The normalizer only records literal option words (a wrapper's
+		// dynamic option value stops the peel, leaving the option unsatisfied),
+		// so every option lowers as a literal argument word.
+		for _, o := range w.Options {
+			bw.Options = append(bw.Options, Arg{Value: o, Literal: true})
+		}
+		c.Wrappers = append(c.Wrappers, bw)
 	}
 	if prog != nil {
 		if len(prog.Funcs) > 0 {

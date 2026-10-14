@@ -489,6 +489,41 @@ func TestSpotCheckEntries(t *testing.T) {
 	check("git", "clean", engine.KindFSWrite, engine.ModeDirect, ValueArgs)
 }
 
+// TestSudoResolvesAsKBCommand proves sudo resolves as a knowledge-base command
+// with the privilege-escalation surface documented against the security
+// dialect: the run-as options are Conditional PrivEsc sourced from the flag
+// value, and the shell/list/login flags together with the COMMAND operand are
+// Direct PrivEsc sourced from the positional arguments.
+func TestSudoResolvesAsKBCommand(t *testing.T) {
+	k := mustLoad(t)
+	c, ok := k.Command("sudo")
+	if !ok {
+		t.Fatal("command sudo not found in the knowledge base")
+	}
+	if c.Dialect != DialectSecurity {
+		t.Errorf("sudo dialect = %q, want %q", c.Dialect, DialectSecurity)
+	}
+	check := func(spec string, kind engine.EffectKind, mode engine.EffectMode, vf ValueSource) {
+		t.Helper()
+		p, ok := c.Param(spec)
+		if !ok {
+			t.Fatalf("sudo has no param %q", spec)
+		}
+		if p.Effect.Kind != kind || p.Effect.Mode != mode || p.Effect.ValueFrom != vf {
+			t.Errorf("sudo %s = {%s %s %s}, want {%s %s %s}",
+				spec, p.Effect.Kind, p.Effect.Mode, p.Effect.ValueFrom, kind, mode, vf)
+		}
+	}
+	check("-u", engine.KindPrivEsc, engine.ModeConditional, ValueFlagValue)
+	check("--user", engine.KindPrivEsc, engine.ModeConditional, ValueFlagValue)
+	check("-g", engine.KindPrivEsc, engine.ModeConditional, ValueFlagValue)
+	check("--group", engine.KindPrivEsc, engine.ModeConditional, ValueFlagValue)
+	check("-i", engine.KindPrivEsc, engine.ModeDirect, ValueArgs)
+	check("-s", engine.KindPrivEsc, engine.ModeDirect, ValueArgs)
+	check("-l", engine.KindPrivEsc, engine.ModeDirect, ValueArgs)
+	check("COMMAND", engine.KindPrivEsc, engine.ModeDirect, ValueArgs)
+}
+
 // TestCommandParamIndexMatchesScan locks the invariant behind Command.Param's
 // O(1) index: after KB.build every command must answer Param/HasParam exactly
 // as a linear scan over its Params would, for declared specs and for unknown

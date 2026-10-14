@@ -18,7 +18,7 @@
 - `internal/analysis/canonical_test.go` — the retry-splitting repros (npx vs `node_modules/.bin` binary path; staged write + `mv` vs `sed -i`), the normalization table, the staging-fold boundary rules and the ⊤-survival invariant.
 - `cmd/flowsh/main.go` — the CLI front-end that consumes this facade (see [CLI](cli.md)).
 - `api/api.go` — the public embedding surface: a thin type-alias re-export of this facade for external Go modules (see [Public Embedding Surface](#public-embedding-surface-api)).
-- `testdata/corpus/*.json` — the corpus documents loaded by `LoadCorpus` (`benign_bash.json`, `destructive_bash.json`, `guardfall_bash.json`, `guardfall_posix.json`, `guardfall_posh.json`, `resolution_bash.json`, `ps_cases.json`, `external_bash.json`, `external_posh.json`); `testdata/corpus/README.md` documents the external balanced sample's provenance, licenses, methodology and the per-case `windows` provider-profile flag.
+- `testdata/corpus/*.json` — the corpus documents loaded by `LoadCorpus` (`benign_bash.json`, `destructive_bash.json`, `guardfall_bash.json`, `guardfall_posix.json`, `guardfall_posh.json`, `resolution_bash.json`, `ps_cases.json`, `sudo_bash.json`, `external_bash.json`, `external_posh.json`); `testdata/corpus/README.md` documents the external balanced sample's provenance, licenses, methodology and the per-case `windows` provider-profile flag.
 - `engine/effect.go`, `engine/score.go`, `engine/report.go` — the frozen core types embedded in `Report`.
 
 ## Core Types

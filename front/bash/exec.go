@@ -1544,6 +1544,11 @@ func (it *interp) execCall(c *syntax.CallExpr) {
 			// command. Degrade to ⊤ rather than fail open to an empty report.
 			e := it.markTopEffect("wrapper consumed the whole command line")
 			it.derive(e, engine.Atom{Kind: engine.AtomCommand, Text: wrapperText(wrappers), Loc: sourceLoc(pos, it.prog.File)})
+			// The elevation knowledge for privilege wrappers (sudo) lives in
+			// the binding layer, so the wrapper-only call still goes through
+			// the resolver seam (sudo -i runs a root shell even without an
+			// inner command).
+			it.elevateWrappers(cmd)
 		}
 		it.stdout, it.stdoutKnown = "", true
 		return
@@ -1562,6 +1567,22 @@ func (it *interp) execCall(c *syntax.CallExpr) {
 	it.stdoutTaint = outTaintOf(it.effs[effStart:], it.stdinTaint)
 }
 
+// elevateWrappers consults the resolver for a call that never reaches the
+// ordinary binding path — the wrapper consumed the whole command line, or the
+// inner command's name is not statically known. The elevation knowledge for
+// privilege wrappers (sudo) lives in the binding layer, so the call still goes
+// through the seam: the binder reports the wrapper's own effects (PrivEsc for
+// sudo, per the refined -u doctrine) and, for a dynamically-named inner
+// command, its own ⊤ on top. A nil resolver contributes nothing.
+func (it *interp) elevateWrappers(cmd *Command) {
+	if it.res == nil || len(cmd.Wrappers) == 0 {
+		return
+	}
+	bound := it.res(cmd, it.resolutionProgram())
+	it.effs = append(it.effs, bound.Effects...)
+	it.ders = append(it.ders, bound.Derivations...)
+}
+
 // dispatch applies the name-resolution chain with the interpreter's own state:
 // aliases are expanded, functions are executed, code-execution sinks and
 // code-executing builtins yield ⊤, and every other command's effects come from
@@ -1570,6 +1591,10 @@ func (it *interp) dispatch(name string, nameOK bool, argv []string, cmd *Command
 	if !nameOK {
 		e := it.markTopEffectFlow("dynamically-named command", it.sinkFlowRole(cmd))
 		it.derive(e, engine.Atom{Kind: engine.AtomCommand, Text: cmd.Name, Loc: sourceLoc(cmd.Pos, it.prog.File)})
+		// A privilege wrapper over a dynamically-named command (sudo "$X")
+		// still elevates: consult the resolver seam for the wrapper's own
+		// effects even though the inner name cannot be bound.
+		it.elevateWrappers(cmd)
 		it.statusKnown = false
 		return nil
 	}

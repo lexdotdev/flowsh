@@ -1,6 +1,7 @@
 package bind_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -637,3 +638,309 @@ func TestBindFileRefPayloadEgressKept(t *testing.T) {
 // path (frontend interpreter computes Dir, binder lowers it) is covered by
 // front/bash/expand_resolve_test.go with the real binder wired through the
 // Resolver seam, and by internal/analysis/vars_test.go at the facade.
+
+// ---------------------------------------------------------------------------
+// Wrapper elevation (refined -u doctrine)
+// ---------------------------------------------------------------------------
+
+// countKind counts the effects of one kind in a result.
+func countKind(res *bind.Result, kind engine.EffectKind) int {
+	n := 0
+	for _, e := range res.Effects {
+		if e.Kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+// hasDerivationFor reports whether a derivation justifies an effect of the
+// given kind and mode — the keying normalization merges effects by, and the
+// composition layer's buildWhy maps derivations by.
+func hasDerivationFor(res *bind.Result, kind engine.EffectKind, mode engine.EffectMode) bool {
+	for _, d := range res.Derivations {
+		if d.Effect.Kind == kind && d.Effect.Mode == mode {
+			return true
+		}
+	}
+	return false
+}
+
+// TestBindWrapperOptionsAndPosFlowIntoCall pins the propagation half of the
+// wrapper elevation: the option words a wrapper carried and the position of
+// its own name ride on bind.Call, so the binder can refine the wrapper by its
+// own command line. The bash.Command shape and the resolver seam stay as they
+// were.
+func TestBindWrapperOptionsAndPosFlowIntoCall(t *testing.T) {
+	prog := parse(t, "sudo -u root whoami")
+	call := bind.FromBash(prog.Stmts[0].Cmd, prog)
+	if len(call.Wrappers) != 1 {
+		t.Fatalf("wrappers: got %d, want 1", len(call.Wrappers))
+	}
+	w := call.Wrappers[0]
+	if w.Name != "sudo" {
+		t.Errorf("wrapper name: got %q, want sudo", w.Name)
+	}
+	if w.Pos.Line != 1 || w.Pos.Col != 1 {
+		t.Errorf("wrapper pos: got %d:%d, want 1:1", w.Pos.Line, w.Pos.Col)
+	}
+	if len(w.Options) != 2 || w.Options[0].Value != "-u" || w.Options[1].Value != "root" {
+		t.Fatalf("wrapper options: got %+v, want [-u root]", w.Options)
+	}
+	for _, o := range w.Options {
+		if !o.Literal {
+			t.Errorf("wrapper option %q must be literal", o.Value)
+		}
+	}
+	// The inner command is what remains after the peel.
+	if call.Name != "whoami" || len(call.Args) != 0 {
+		t.Errorf("inner call: got %q with %d args, want whoami with 0", call.Name, len(call.Args))
+	}
+}
+
+// TestBindSudoElevationMatrix is the acceptance matrix of the refined -u
+// doctrine: sudo elevates by its own command line, before the inner command is
+// resolved; -u decides, and nothing else sets Result.Conservative.
+func TestBindSudoElevationMatrix(t *testing.T) {
+	b := newBinder(t)
+
+	t.Run("no -u elevates to root", func(t *testing.T) {
+		res := bindOne(t, b, "sudo whoami")
+		e := hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+		if e.Certainty != engine.CertaintyCertain {
+			t.Errorf("elevation certainty: got %s, want certain", e.Certainty)
+		}
+		if res.Conservative {
+			t.Errorf("a resolved inner command must not turn conservative: %s", effectsString(res))
+		}
+	})
+
+	t.Run("-u root literal elevates to root", func(t *testing.T) {
+		res := bindOne(t, b, "sudo -u root whoami")
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+	})
+
+	t.Run("-u 0 literal elevates to root", func(t *testing.T) {
+		res := bindOne(t, b, "sudo -u 0 whoami")
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+	})
+
+	t.Run("-uroot cluster elevates to root", func(t *testing.T) {
+		res := bindOne(t, b, "sudo -uroot cmd")
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+		// The unknown inner command still degrades to ⊤ on its own.
+		if !res.Conservative {
+			t.Errorf("unknown inner command must stay conservative")
+		}
+	})
+
+	t.Run("-u nobody does not elevate", func(t *testing.T) {
+		res := bindOne(t, b, "sudo -u nobody touch /opt/x")
+		if n := countKind(res, engine.KindPrivEsc); n != 0 {
+			t.Errorf("literal non-root -u must not elevate: %d PrivEsc effects (%s)", n, effectsString(res))
+		}
+		// The inner command still binds normally.
+		hasEffectOn(t, res, engine.KindFSMeta, engine.ModeDirect, "/opt/x")
+		// …and the skipped elevation is explained, not silent.
+		explained := false
+		for _, n := range res.Notes {
+			if strings.Contains(n, "nobody") && strings.Contains(n, "sudo") {
+				explained = true
+			}
+		}
+		if !explained {
+			t.Errorf("expected a note explaining the skipped elevation, notes=%v", res.Notes)
+		}
+	})
+
+	t.Run("dynamic -u elevates with ⊤ target", func(t *testing.T) {
+		res := bindOne(t, b, "sudo -u $U cmd")
+		e, ok := findEffect(res, engine.KindPrivEsc, engine.ModeDirect)
+		if !ok {
+			t.Fatalf("dynamic -u must still elevate: %s", effectsString(res))
+		}
+		if !e.Target.IsTop() {
+			t.Errorf("dynamic -u target: got %s, want ⊤", e.Target)
+		}
+	})
+
+	t.Run("dynamic -u does not set Conservative by itself", func(t *testing.T) {
+		res := bindOne(t, b, "sudo -u $U touch /opt/x")
+		e, ok := findEffect(res, engine.KindPrivEsc, engine.ModeDirect)
+		if !ok || !e.Target.IsTop() {
+			t.Fatalf("expected PrivEsc/Direct over ⊤, got %s", effectsString(res))
+		}
+		if res.Conservative {
+			t.Errorf("a ⊤-targeted elevation is an unresolved target, not unknown code execution: Conservative must stay false")
+		}
+		hasEffectOn(t, res, engine.KindFSMeta, engine.ModeDirect, "/opt/x")
+	})
+
+	t.Run("one elevation across the wrapper chain", func(t *testing.T) {
+		res := bindOne(t, b, "sudo env FOO=1 nohup daemon")
+		if n := countKind(res, engine.KindPrivEsc); n != 1 {
+			t.Fatalf("elevations: got %d, want exactly 1 (%s)", n, effectsString(res))
+		}
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+		// env and nohup are unchanged: the assignment still lands.
+		e, ok := findEffect(res, engine.KindEnvWrite, engine.ModeDirect)
+		if !ok || !e.Target.Contains("FOO") {
+			t.Errorf("env assignment must survive: %s", effectsString(res))
+		}
+	})
+
+	t.Run("env wrapper alone does not elevate", func(t *testing.T) {
+		res := bindOne(t, b, "env FOO=1 cmd")
+		if n := countKind(res, engine.KindPrivEsc); n != 0 {
+			t.Errorf("env declares no PrivEsc: got %d elevation(s) (%s)", n, effectsString(res))
+		}
+		hasEffectOn(t, res, engine.KindEnvWrite, engine.ModeDirect, "FOO")
+	})
+
+	t.Run("nested sudo elevates once", func(t *testing.T) {
+		res := bindOne(t, b, "sudo sudo cmd")
+		if n := countKind(res, engine.KindPrivEsc); n != 1 {
+			t.Fatalf("nested sudo must merge into one elevation: got %d (%s)", n, effectsString(res))
+		}
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+	})
+}
+
+// TestBindNamelessWrapperElevation pins the two paths that never reach the
+// ordinary binding flow yet still must elevate: a privilege wrapper that
+// consumed the whole command line (sudo -i — no command word at all) and a
+// privilege wrapper over a dynamically-named inner command (sudo $X — the
+// name cannot be bound). The elevation knowledge lives in the binding layer,
+// so the binder must report it for nameless and unknown-name calls alike;
+// non-privilege wrappers (timeout) stay silent.
+func TestBindNamelessWrapperElevation(t *testing.T) {
+	b := newBinder(t)
+
+	t.Run("bare sudo -i (no command word) elevates", func(t *testing.T) {
+		res := bindOne(t, b, "sudo -i")
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+	})
+
+	t.Run("sudo -u root -i elevates to root", func(t *testing.T) {
+		res := bindOne(t, b, "sudo -u root -i")
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+	})
+
+	t.Run("sudo -u nobody -i does not elevate", func(t *testing.T) {
+		res := bindOne(t, b, "sudo -u nobody -i")
+		if n := countKind(res, engine.KindPrivEsc); n != 0 {
+			t.Errorf("literal non-root -u must not elevate: %d PrivEsc (%s)", n, effectsString(res))
+		}
+	})
+
+	t.Run("sudo over a dynamically-named command elevates", func(t *testing.T) {
+		res := bindOne(t, b, "sudo $X")
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+		// The unresolvable inner command still degrades to ⊤.
+		if !res.Conservative {
+			t.Errorf("dynamic inner command must stay conservative: %s", effectsString(res))
+		}
+	})
+
+	t.Run("timeout with no command stays silent", func(t *testing.T) {
+		res := bindOne(t, b, "timeout 5")
+		if n := countKind(res, engine.KindPrivEsc); n != 0 {
+			t.Errorf("timeout declares no PrivEsc: got %d (%s)", n, effectsString(res))
+		}
+		if len(res.Effects) != 0 {
+			t.Errorf("nameless non-privilege wrapper binds no effects: %s", effectsString(res))
+		}
+	})
+}
+
+// TestBindSudoWhyTraceCoversEffects pins the why-trace half of the elevation:
+// every reported effect — the elevation included — rests on a derivation keyed
+// by (kind, mode), so the composition layer's WhyGaps stay empty.
+func TestBindSudoWhyTraceCoversEffects(t *testing.T) {
+	b := newBinder(t)
+	for _, src := range []string{
+		"sudo whoami",
+		"sudo -u root whoami",
+		"sudo -uroot cmd",
+		"sudo -u nobody touch /opt/x",
+		"sudo -u $U cmd",
+		"sudo env FOO=1 nohup daemon",
+		"sudo sudo cmd",
+		"sudo touch /opt/x",
+	} {
+		res := bindOne(t, b, src)
+		if len(res.Effects) == 0 {
+			t.Errorf("%q: no effects at all", src)
+			continue
+		}
+		for _, e := range res.Effects {
+			if !hasDerivationFor(res, e.Kind, e.Mode) {
+				t.Errorf("%q: effect %s/%s has no derivation (why gap)", src, e.Kind, e.Mode)
+			}
+		}
+	}
+}
+
+// TestBindSudoDerivationCitesWrapperTokens pins that the elevation's
+// derivation names the concrete premises: the wrapper's own token at its
+// position, the -u flag when present, and its value.
+func TestBindSudoDerivationCitesWrapperTokens(t *testing.T) {
+	b := newBinder(t)
+	res := bindOne(t, b, "sudo -u root whoami")
+	var der *engine.Derivation
+	for i := range res.Derivations {
+		if res.Derivations[i].Effect.Kind == engine.KindPrivEsc {
+			der = &res.Derivations[i]
+			break
+		}
+	}
+	if der == nil {
+		t.Fatalf("no elevation derivation: %s", effectsString(res))
+	}
+	var cmd, flag, operand bool
+	for _, a := range der.Atoms {
+		switch {
+		case a.Kind == engine.AtomCommand && a.Text == "sudo":
+			cmd = true
+			if a.Loc == nil || a.Loc.Line != 1 || a.Loc.Col != 1 {
+				t.Errorf("wrapper atom pos: got %+v, want 1:1", a.Loc)
+			}
+		case a.Kind == engine.AtomFlag && a.Text == "-u":
+			flag = true
+		case a.Kind == engine.AtomOperand && a.Text == "root":
+			operand = true
+		}
+	}
+	if !cmd || !flag || !operand {
+		t.Errorf("derivation atoms incomplete: cmd=%v flag=%v operand=%v, atoms=%+v", cmd, flag, operand, der.Atoms)
+	}
+	if len(der.Rules) == 0 || der.Rules[0] != "priv.escalate" {
+		t.Errorf("derivation rules: got %v, want [priv.escalate …]", der.Rules)
+	}
+}
+
+// TestBindSudoReportDiffersFromBareInput pins the report-level consequence:
+// `sudo touch /opt/x` is no longer bound identically to the bare `touch
+// /opt/x` — the input's report carries the elevation the wrapper implies.
+func TestBindSudoReportDiffersFromBareInput(t *testing.T) {
+	b := newBinder(t)
+	wrapped := bindOne(t, b, "sudo touch /opt/x")
+	bare := bindOne(t, b, "touch /opt/x")
+	if countKind(wrapped, engine.KindPrivEsc) != 1 {
+		t.Fatalf("sudo touch must elevate exactly once: %s", effectsString(wrapped))
+	}
+	if countKind(bare, engine.KindPrivEsc) != 0 {
+		t.Fatalf("bare touch must not elevate: %s", effectsString(bare))
+	}
+	aw, err := wrapped.Encode()
+	if err != nil {
+		t.Fatalf("encode wrapped: %v", err)
+	}
+	ab, err := bare.Encode()
+	if err != nil {
+		t.Fatalf("encode bare: %v", err)
+	}
+	if bytes.Equal(aw, ab) {
+		t.Fatalf("sudo touch /opt/x must report differently than touch /opt/x")
+	}
+}

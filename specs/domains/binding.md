@@ -6,7 +6,7 @@
 
 ## Key Files
 
-- `bind/bind.go` — the binder: `Bind`, `BindBash`, `bindCommand`, `parseArgs` (flag/operand binding), `lowerParam` and `fileRefPath` (the `@file` convention), `taintFor`, `argsTaint`, `taintEgress`.
+- `bind/bind.go` — the binder: `Bind`, `BindBash`, `bindCommand`, `parseArgs` (flag/operand binding), `lowerParam` and `fileRefPath` (the `@file` convention), `taintFor`, `argsTaint`, `taintEgress`, `wrapperElevation`/`declaresPrivEsc` (refined -u wrapper elevation), `FromBash` (the frontend bridge).
 - `bind/resolve.go` — name resolution: `ResolveKind`, `Resolution`, `resolved`, the `resolve` chain (alias → function → builtin → PATH, then the path-basename and package-runner links), `expandAliases` and `tokenizeAlias`.
 - `bind/runner.go` — package-runner and project-local bin-path resolution: `IsPackageRunner`, `StripBinaryPath`, `NormalizeBinaryName` (the runner/path vocabulary the binder and the canonical form share) and the runner consumption (`runnerBinaryArgs`, `runnerBinary`).
 - `bind/bind_test.go` — binder tests.
@@ -58,11 +58,21 @@ type Call struct {
 	NamePresent bool    `json:"-"`              // does the statement have a command word at all?
 	Args        []Arg   `json:"args,omitempty"`
 	Env         []EnvAssign `json:"env,omitempty"`
-	Wrappers    []string    `json:"wrappers,omitempty"`  // sudo, env, … outermost first
+	Wrappers    []Wrapper    `json:"wrappers,omitempty"`  // sudo, env, … outermost first
 	Funcs       map[string]bool   `json:"funcs,omitempty"`
 	Aliases     map[string]string `json:"aliases,omitempty"`
 	Pos         engine.SourceLoc  `json:"pos,omitempty"`
 	StdinTaint  engine.Taint      `json:"-"`
+}
+
+// Wrapper is one command wrapper peeled off a call (sudo, env, …), outermost
+// first, with the option words it carried and the position of its own name
+// word. Options are always literal: a wrapper's dynamic option value stops the
+// peel, leaving the option without a value (`sudo -u $U` keeps `-u` alone).
+type Wrapper struct {
+	Name    string           `json:"name"`
+	Options []Arg            `json:"options,omitempty"`
+	Pos     engine.SourceLoc `json:"-"`
 }
 
 type Binder struct{ k *kb.KB }
@@ -116,6 +126,12 @@ type Resolution struct {
                         │
         ┌───────────────┴───────────────────────────────┐
         │ 1. env assignments (VAR=x cmd, env VAR=x cmd)  │──▶ EnvWrite effects
+        └───────────────┬───────────────────────────────┘
+                        │
+        ┌───────────────┴───────────────────────────────┐
+        │ 1b. wrapper elevation (refined -u): a wrapper   │
+        │ whose KB entry declares PrivEsc (sudo) binds    │──▶ PrivEsc Direct effects (+ notes)
+        │ its OWN option words via parseArgs              │
         └───────────────┬───────────────────────────────┘
                         │
    NamePresent == false │  bare assignment → ResolveAssignment;  else ResolveEmpty
@@ -184,6 +200,7 @@ The same gate applies at the two frontend-side egress creation points: the bash 
 - The two invocation-form links run only after the PATH link misses, and each maps a spelling onto a knowledge-base command: `4a` reduces a path-qualified name to its `StripBinaryPath` basename, so `./node_modules/.bin/tsc` and `./mvnw` bind the bare binary's signature; `4b` consumes a package runner's own words and binds its first non-flag literal operand (`npx tsc`). Both fail closed to ⊤ for a dynamic operand, an operand outside the KB, a runner that names no operand, a runner `-c`/`--call`, and a code-execution interpreter operand (`npx node -e …`, which matches the frontend's own sink rule so the runner spelling stays ⊤ like the bare `node -e …`); a path-qualified runner spelling (`./node_modules/.bin/npx …`) names no KB command and so also stays ⊤ — the runner link keys off the bare runner name, not the path basename.
 - A shell function resolves to ⊤ with `ModeTransitive` (its body is opaque to command binding).
 - Alias expansion is bounded by `maxAliasDepth`; a cyclic or unparseable alias chain degrades to ⊤.
+- A wrapper whose knowledge-base entry declares a PrivEsc parameter (`sudo`) elevates by its own command line, before the inner command is resolved (`wrapperElevation`, predicate `declaresPrivEsc`): the wrapper's option words are bound via `parseArgs` and refined by the -u doctrine — no `-u`/`--user`, or a literal `root`/`0` value, yields a certain (`Direct`) PrivEsc targeting `root`; a literal non-root value yields no elevation plus an explanatory note; a missing or non-static value yields the certain elevation over a ⊤ target user. A ⊤-targeted elevation is an unresolved target, not unknown code execution: it never sets `Result.Conservative`. Other PrivEsc options (`-g`/`--group`) neither decide nor elevate: only the target user makes the call privileged. A wrapper without the predicate (env, nohup, …) contributes nothing of its own. The elevation reaches every call that carries a privilege wrapper, including the two that never reach the ordinary flow: a consumed command line (no command word after the peel — `sudo -i`) and a dynamically-named inner command (`sudo $X`) are handed to the binder through the resolver seam by the frontend's `elevateWrappers`, so the wrapper's own effects are reported even when nothing else can be bound.
 - `Result.Conservative` is true exactly when the outcome includes a ⊤ (`CodeExec`) effect.
 - A matched destructive-flags entry folds its class severity into `Result.Destructiveness` with `Join` (max), so a destructive class raises the binder result's destructiveness even when the matched parameter's own effects are mild.
 - Unrecognized flag names are surfaced as a note, not dropped silently.
@@ -199,7 +216,7 @@ The same gate applies at the two frontend-side egress creation points: the bash 
 ## Extension Points
 
 - **Add a resolution link**: extend `resolve` in `bind/resolve.go` (e.g. a new shell-symbol source) — keep the alias → function → builtin → PATH order and the ⊤ fallback, and add any new invocation-form link after the PATH miss.
-- **Teach the binder a new wrapper**: wrappers are peeled by the frontend's normalizer (`front/bash/normalize.go` `wrapperSpecs`) and surfaced on `Call.Wrappers`; the binder then binds what remains.
+- **Teach the binder a new wrapper**: wrappers are peeled by the frontend's normalizer (`front/bash/normalize.go` `wrapperSpecs`) and surfaced on `Call.Wrappers` (name, option words, position); the binder then binds what remains. A wrapper whose KB entry declares PrivEsc is additionally refined by its own options (`wrapperElevation`, the refined -u doctrine).
 - **Add KB-driven parameter behaviour**: extend `lowerParam`/`parseArgs` when a new `ParamKind`/`ValueSource` is introduced in the KB (bump the KB schema version).
 - **New style**: add a `Style` constant; frontends emit it on the `Call`.
 

@@ -47,6 +47,9 @@ resolution, scoring, facade and CLI stages.
      │
      ▼
  bind.Binder.Bind                 bind/bind.go
+   wrapper elevation: per peeled wrapper whose KB record declares
+     PrivEsc (sudo) — parseArgs on its own option words, the
+     refined -u doctrine → PrivEsc Direct effects (+ notes)
    resolve(c)  →  bindCommand(res.command, res.args, c.StdinTaint)
      │                        │
      │                        ▼
@@ -72,6 +75,12 @@ Notes on the bash stage:
   (`front/bash/exec.go`) is what makes an egress pairing a real data flow.
 - `Bind` always calls `normalizeResult` (`bind/bind.go`), so the binder's output
   is already canonical.
+- The binder's wrapper-elevation pass (`wrapperElevation`, `bind/bind.go`) runs
+  after the frontend's peel and before `resolve`: a wrapper whose
+  knowledge-base record declares a PrivEsc parameter (`sudo`) contributes its
+  own elevation from its option words (the refined -u doctrine), ahead of the
+  wrapped command's binding. The PowerShell path peels no wrappers, so on that
+  path `sudo …` stays an unknown cmdlet and degrades to ⊤.
 
 ## PowerShell path: parse → lower
 

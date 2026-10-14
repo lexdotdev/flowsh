@@ -1,0 +1,34 @@
+{
+  "name": "sudo-bash",
+  "description": "sudo wrapper elevation (the refined -u doctrine). Recall cases must be covered — an elevating wrapper carries a PrivEsc effect, an unmodelled flag-only invocation degrades soundly to ⊤; benign cases must not raise ⊤/conservative.",
+  "cases": [
+    {
+      "id": "des-sudo-touch-opt",
+      "group": "destructive",
+      "lang": "bash",
+      "input": "sudo touch /opt/x",
+      "note": "wrapper elevation: sudo with no -u runs the wrapped command as root, so the report must carry a Direct PrivEsc targeting root"
+    },
+    {
+      "id": "des-sudo-u-root-whoami",
+      "group": "destructive",
+      "lang": "bash",
+      "input": "sudo -u root whoami",
+      "note": "wrapper elevation: an explicit literal root target is the same Direct PrivEsc as the implicit case"
+    },
+    {
+      "id": "des-sudo-version",
+      "group": "destructive",
+      "lang": "bash",
+      "input": "sudo --version",
+      "note": "flag-only wrapper invocation: --version is unmodelled on the privileged wrapper, so the report degrades soundly to ⊤ (accepted false positive, see SECURITY.md Known Risks); pinned as a recall case, not a benign-precision case"
+    },
+    {
+      "id": "ben-sudo-u-nobody-touch",
+      "group": "benign",
+      "lang": "bash",
+      "input": "sudo -u nobody touch /opt/x",
+      "note": "wrapper elevation precision: an explicit non-root target de-elevates (no PrivEsc); the wrapped touch keeps its FSMeta"
+    }
+  ]
+}

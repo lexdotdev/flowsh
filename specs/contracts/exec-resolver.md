@@ -57,7 +57,7 @@ When the analyser holds no binder, it calls `bash.Exec(v, sourceName(root, "scri
   ExecResult{ Effects, Derivations, Destructiveness, Cmds, Conservative, Top, Notes }
 ```
 
-The Resolver is called only for *ordinary* commands; everything the shell contributes on its own (redirections, environment writes, code-execution sinks) is emitted directly by the interpreter. Each call returns a fresh `bash.Resolution` whose `Effects` and `Derivations` the interpreter accumulates; the frontend never sees `bind` types, only `engine.Effect`/`engine.Derivation`.
+The Resolver is called for *ordinary* commands; everything the shell contributes on its own (redirections, environment writes, code-execution sinks) is emitted directly by the interpreter. It is also consulted for the two call shapes that never reach the ordinary flow but still carry privilege-wrapper knowledge: a wrapper that consumed the whole command line (`sudo -i` — no command word after the peel) and a wrapper over a dynamically-named inner command (`sudo $X` — the name cannot be bound); the interpreter folds the returned effects (the wrapper's `PrivEsc`, plus the binder's own ⊤ for the dynamic name) into its own via `elevateWrappers`. Each call returns a fresh `bash.Resolution` whose `Effects` and `Derivations` the interpreter accumulates; the frontend never sees `bind` types, only `engine.Effect`/`engine.Derivation`.
 
 ## Error Propagation
 

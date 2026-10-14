@@ -11,6 +11,35 @@ the two *frozen* wire-contract tags that the analyser emits — `effect-ir/v2`
 frozen contract is called out in the entry that makes it; the contract tags move
 only on a breaking shape change, not on every module release.
 
+## [Unreleased]
+
+### Added
+
+- **sudo wrapper elevation (refined -u).** The bash frontend now carries each
+  peeled wrapper's option words and source position into `bind.Call`
+  (`Wrapper{Name, Options, Pos}`), and the binder runs a wrapper-elevation pass
+  before resolving the inner command: a wrapper whose knowledge-base record
+  declares a PrivEsc parameter (`sudo`, new in `kb/data/security.yaml`) binds
+  its own command line via `parseArgs` and elevates by the refined -u doctrine —
+  no `-u`/`--user`, or a literal `root`/`0`, yields a certain (`Direct`)
+  `PrivEsc` targeting `root`; a literal non-root user (`sudo -u nobody …`)
+  yields no elevation plus an explanatory note; a missing or dynamic value keeps
+  the certain elevation over an unresolved (⊤) target user without touching
+  `Result.Conservative`. `-g`/`--group` neither decide nor elevate (only the
+  target user makes the call privileged), unrecognized wrapper flags surface in
+  the notes, and `sudo sudo cmd` reports exactly one elevation. Every elevation
+  is justified in the why-trace by the wrapper's own tokens (`command(sudo)` at
+  the wrapper's position, `flag(-u)`, `operand(root)`, rule `priv.escalate`).
+  The conformance corpus gains a sudo bundle (`testdata/corpus/sudo_bash.json`;
+  the latency baseline is re-pinned at 352 cases), and the accepted precision
+  trade-offs — `sudo --version`'s ⊤ verdict, `doas`/`pkexec` and the
+  wrapper-less PowerShell path — are recorded in SECURITY.md. The elevation
+  also covers the two call shapes that never reach the ordinary binding flow:
+  a wrapper that consumed the whole command line (`sudo -i` runs a root shell
+  with no inner command) and a wrapper over a dynamically-named command
+  (`sudo $X`) — the interpreter routes both through the resolver seam
+  (`elevateWrappers`), so the report carries `PrivEsc` alongside the ⊤.
+
 ## [v0.5.0] - 2026-09-30
 
 A corpus-and-recall release. An external balanced sample joins the conformance

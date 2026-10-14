@@ -36,8 +36,12 @@ The KB is compiled into the binary: `kb/loader.go` embeds `data/*.yaml` via `//g
 ## Data Flow Across Boundary
 
 ```
-  Call (normalized name + argv)
+  Call (normalized name + argv, wrappers)
         │
+        ▼
+  wrapper elevation: per wrapper w, k.Command(w.Name) ──▶ declaresPrivEsc (sudo)?
+        │    yes: parseArgs against the wrapper's own record — the refined -u doctrine
+        │    → PrivEsc Direct effects (+ notes); no: the call passes through unchanged
         ▼
   Binder.resolve ── k.Command(name) ──▶ *kb.Command ── Dialect==DialectBuiltin? ─┐
         │                                                                        │
@@ -58,7 +62,7 @@ The KB is compiled into the binary: `kb/loader.go` embeds `data/*.yaml` via `//g
   engine.Report (frozen IR)
 ```
 
-Only plain values cross the boundary: `bind` never calls into `kb` mutably, and `kb` never calls back into `bind`. The KB contributes two independent things: per-parameter effects (lowered to `engine.Effect`) and destructive-table entries (whose `Class` is folded, via `Severity()`, into the report's `Destructiveness`).
+Only plain values cross the boundary: `bind` never calls into `kb` mutably, and `kb` never calls back into `bind`. The KB contributes three independent things: per-parameter effects (lowered to `engine.Effect`), destructive-table entries (whose `Class` is folded, via `Severity()`, into the report's `Destructiveness`), and the wrapper records the elevation pass consults — a wrapper whose record declares a PrivEsc parameter (`sudo`) is bound against that record before the inner command is resolved (`wrapperElevation`/`declaresPrivEsc`, the refined -u doctrine; see [Binding](../domains/binding.md)).
 
 ## Error Propagation
 
