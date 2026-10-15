@@ -11,10 +11,38 @@ the two *frozen* wire-contract tags that the analyser emits — `effect-ir/v2`
 frozen contract is called out in the entry that makes it; the contract tags move
 only on a breaking shape change, not on every module release.
 
-## [Unreleased]
+## [v0.6.0] - 2026-10-15
+
+A policy-and-privilege release. A new optional public policy package turns a
+report into an allow/review/deny decision, and the bash binder learns to
+elevate a command through the `sudo` wrapper.
 
 ### Added
 
+- **Report policy package.** The optional public package
+  `github.com/v0lka/flowsh/policy` evaluates an `api.Report` under trusted,
+  caller-owned Go configuration and returns an `Allow`, `Review` or `Deny`
+  decision with deterministic, sorted reason codes
+  ([ADR-0017](specs/decisions/0017-report-policy-package.md)). `New` validates
+  the configuration and copies its maps, defaulting `Unknown` to `Deny`,
+  `Conservative` to `Review`, `Exfiltration` to `Deny`, `Cradle` to `Review`
+  and `Ingest` to `Allow`, with empty `Effects`/`Grades` maps; `Evaluate`
+  validates the report's tool name/version, schema version, canonical language
+  and grade before applying rules, so a missing, invalid or incompatible report
+  denies with `invalid_report`, an otherwise-valid report whose `Covered()` is
+  false denies with `uncovered_report`, and a nil or zero policy denies with
+  `invalid_policy`. All matching restrictions combine with
+  `Deny > Review > Allow`; unknown (`Top || HasTop()`) and conservative
+  analysis always require Review or Deny, and an Allow rule never overrides
+  another restriction. Decisions carry only the stable signal names
+  (`unknown`, `conservative`, `exfiltration`, `cradle`, `ingest`),
+  `effect:<kind>` and `grade:<grade>`, never analysed text. The package depends
+  only on `api` and `engine`, performs no I/O or command execution, and leaves
+  analysis, scoring, the CLI report and the report contract unchanged; it amends
+  ADR-0010's framing of `api` as the sole public surface while `api` remains the
+  analysis entry point. A new `specs/domains/policy.md` records the contract,
+  and `docs/embedding.md`, `README.md`, `SECURITY.md`,
+  `specs/architecture/layers.md` and `specs/INDEX.md` name the decision layer.
 - **sudo wrapper elevation (refined -u).** The bash frontend now carries each
   peeled wrapper's option words and source position into `bind.Call`
   (`Wrapper{Name, Options, Pos}` — a source-breaking type change for code that
@@ -59,6 +87,13 @@ only on a breaking shape change, not on every module release.
 
 ### Fixed
 
+- **Policy coverage diagnostics (2026-10 code review).** The coverage gate is
+  applied to the validated report as its own step instead of being folded into
+  the report-validation check, so an otherwise-valid report with no effects and
+  neither the `Top` nor the `Conservative` flag — Bash `true` and `:` — denies
+  with the distinct `uncovered_report` code rather than being reported as
+  malformed. Validation still precedes coverage, so an invalid report always
+  uses `invalid_report`.
 - **Review hardening of the sudo elevation (2026-10 code review).**
   `sudo -u '#0' …` (and the `00` spelling) is classified numerically instead of
   falling into a false "not root" de-elevation note; `#1000` is classified by
@@ -83,6 +118,11 @@ only on a breaking shape change, not on every module release.
   trailing bare `-u`/`--user` with no value on an inert line carries its own
   explanatory note (real sudo usage-errors on the missing argument) instead
   of staying silent.
+
+### Changed
+
+- **CI.** The `golangci-lint` GitHub Action is pinned to a version compatible
+  with Go 1.27.2 (`.github/workflows/ci.yml`).
 
 ## [v0.5.0] - 2026-09-30
 
@@ -452,6 +492,7 @@ below.
   too coarse to observe the deadline, and widened the repeated-statement source
   so the timeout-to-⊤ path stays covered everywhere (ADR-0013).
 
+[v0.6.0]: https://github.com/v0lka/flowsh/compare/v0.5.0...v0.6.0
 [v0.5.0]: https://github.com/v0lka/flowsh/compare/v0.4.0...v0.5.0
 [v0.4.0]: https://github.com/v0lka/flowsh/compare/v0.3.2...v0.4.0
 [v0.3.2]: https://github.com/v0lka/flowsh/compare/v0.3.1...v0.3.2
