@@ -17,28 +17,72 @@ only on a breaking shape change, not on every module release.
 
 - **sudo wrapper elevation (refined -u).** The bash frontend now carries each
   peeled wrapper's option words and source position into `bind.Call`
-  (`Wrapper{Name, Options, Pos}`), and the binder runs a wrapper-elevation pass
+  (`Wrapper{Name, Options, Pos}` — a source-breaking type change for code that
+  imported `bind` directly and read `Wrappers` as `[]string`; the serialized
+  report contract is unchanged), and the binder runs a wrapper-elevation pass
   before resolving the inner command: a wrapper whose knowledge-base record
   declares a PrivEsc parameter (`sudo`, new in `kb/data/security.yaml`) binds
   its own command line via `parseArgs` and elevates by the refined -u doctrine —
-  no `-u`/`--user`, or a literal `root`/`0`, yields a certain (`Direct`)
-  `PrivEsc` targeting `root`; a literal non-root user (`sudo -u nobody …`)
-  yields no elevation plus an explanatory note; a missing or dynamic value keeps
-  the certain elevation over an unresolved (⊤) target user without touching
-  `Result.Conservative`. `-g`/`--group` neither decide nor elevate (only the
-  target user makes the call privileged), unrecognized wrapper flags surface in
-  the notes, and `sudo sudo cmd` reports exactly one elevation. Every elevation
-  is justified in the why-trace by the wrapper's own tokens (`command(sudo)` at
-  the wrapper's position, `flag(-u)`, `operand(root)`, rule `priv.escalate`).
+  no `-u`/`--user`, or a literal value naming root (`root`, or the numeric
+  spellings `0`, `00`, `#0`), yields a certain (`Direct`) `PrivEsc` targeting
+  `root`; a literal non-root target (`sudo -u nobody …`, `sudo -u '#1000' …`)
+  yields no elevation plus an explanatory note; a missing, dynamic, repeated
+  (`sudo -u a -u b`) or option-shaped value keeps the certain elevation over an
+  unresolved (⊤) target user without touching `Result.Conservative`. A line
+  that names nothing to run (the inert flag-only forms `sudo -l`, `-v`, `-k`,
+  `-h`, `--version`, `--help`, `--list`, … — including `-l`/`--list` with a
+  command word, which sudo only lists permissions for, and the print-and-exit
+  `--version`/`--help`; `-h`/`-v`/`-K` are likewise inert with a command word,
+  whereas `-k` with a command still runs it, only invalidating the cached
+  credentials first) neither elevates, nor claims a de-elevation, nor
+  binds the words that follow: the report degrades to ⊤ instead.
+  `-g`/`--group` never decides nor elevates: a bare `-g` runs the command as
+  the invoking user (man sudo), and the unmodelled group membership is named by
+  a note. Unrecognized wrapper flags surface in the notes, and
+  `sudo sudo cmd` reports exactly one elevation. Every elevation is justified
+  in the why-trace by the wrapper's own tokens (`command(sudo)` at the
+  wrapper's position, `flag(-u)`, `operand(root)`, rule `priv.escalate`).
   The conformance corpus gains a sudo bundle (`testdata/corpus/sudo_bash.json`;
-  the latency baseline is re-pinned at 352 cases), and the accepted precision
-  trade-offs — `sudo --version`'s ⊤ verdict, `doas`/`pkexec` and the
-  wrapper-less PowerShell path — are recorded in SECURITY.md. The elevation
-  also covers the two call shapes that never reach the ordinary binding flow:
-  a wrapper that consumed the whole command line (`sudo -i` runs a root shell
-  with no inner command) and a wrapper over a dynamically-named command
-  (`sudo $X`) — the interpreter routes both through the resolver seam
-  (`elevateWrappers`), so the report carries `PrivEsc` alongside the ⊤.
+  the latency baseline is re-pinned at 359 cases), and the accepted precision
+  trade-offs — the flag-only ⊤ verdict, the unpeeled path-qualified wrapper,
+  group escalation, `doas`/`pkexec` and the wrapper-less PowerShell path — are
+  recorded in SECURITY.md. The elevation also covers the call shapes that
+  never reach the ordinary binding flow: a wrapper that consumed the whole
+  command line (`sudo -i` runs a root shell with no inner command), a wrapper
+  over a dynamically-named command (`sudo $X`), over a code-execution sink
+  (`sudo sh -c '…'`), over a code-executing builtin (`sudo eval '…'`) — the
+  interpreter routes all four through the resolver seam (`elevateWrappers`),
+  folding a result only when it carries elevation evidence, so a wrapper over
+  an effect-free line stays benign; when it does carry evidence, the report
+  gains `PrivEsc` alongside the interpreter's ⊤, and a ⊤ the interpreter
+  already derived is not duplicated by the binder's own.
+
+### Fixed
+
+- **Review hardening of the sudo elevation (2026-10 code review).**
+  `sudo -u '#0' …` (and the `00` spelling) is classified numerically instead of
+  falling into a false "not root" de-elevation note; `#1000` is classified by
+  the same numeric reading and keeps its correct de-elevation; a repeated
+  `-u`/`--user` no longer resolves by the first match — the elevation
+  stays certain over an unresolved target with an ambiguity note; an option
+  token glued after an unsatisfied dynamic `-u` (`sudo -u $U -g root …`) is
+  never read as the target user; `sudo -u"$U" cmd` / `sudo -u$U cmd` keep the
+  same -u semantics as the separated spelling (the recorded unsatisfied
+  option) instead of reporting a confident root escalation; and a
+  path-qualified `/usr/bin/sudo …` degrades to ⊤ like the unpeeled spelling it
+  is, instead of the knowledge-base record's narrow PrivEsc-only binding that
+  silently dropped the wrapped command's own effects. Under a download-cradle
+  flow (`curl … | sudo $X`) the report now carries a single ⊤ `CodeExec` row.
+  Inertness is decided at the privileged wrapper's own position in the chain,
+  not chain-wide: a wrapper above it execs the privileged wrapper, not the
+  other way round, so `env sudo -k` / `nohup sudo -k` — and `sudo sudo -k` —
+  no longer report `PrivEsc` with a "the command still runs" note for a line
+  that executes nothing; `sudo env FOO=1` keeps its elevation (the inner
+  wrapper is a process sudo execs), and `bind`'s package documentation now
+  names both deliberate empty-result shapes of a direct `Bind` call. A
+  trailing bare `-u`/`--user` with no value on an inert line carries its own
+  explanatory note (real sudo usage-errors on the missing argument) instead
+  of staying silent.
 
 ## [v0.5.0] - 2026-09-30
 

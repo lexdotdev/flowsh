@@ -343,24 +343,29 @@ func TestPOSIXVariantCoverage(t *testing.T) {
 // matching is a test failure rather than a silent skip (code-review finding
 // #62). Adding a case with no class entry therefore requires naming it here.
 var destructiveClassExceptions = map[string]bool{
-	"des-b1-source":          true, // executes a file: carries a code-execution effect, not a destructive-table row
-	"des-b1-trap":            true, // trap action: lowered to ⊤, not a destructive-table row
-	"des-b2-unlink":          true, // single-file removal: reported via FSWrite
-	"des-b3-chattr":          true, // attribute change: reported via FSMeta
-	"des-b4-curl-exfil":      true, // credential exfiltration: reported via score.exfil, not the destructive table
-	"des-b4-scp-exfil":       true, // remote copy: reported via FSRead/FSWrite, not the destructive table
-	"des-b5-xz":              true, // decompression overwrite: reported via FSWrite
-	"des-b6-apt":             true, // package install: reported via FSWrite
-	"des-b6-dpkg":            true, // package install: reported via FSWrite
-	"des-b8-chcon":           true, // SELinux label change: reported via FSMeta
-	"des-chmod-suid":         true, // chmod MODE carries no class (a mode-keyed row over-reported every chmod); reported via FSMeta
-	"des-kb-halt":            true, // intrinsic ProcSpawn (finding #8); no destructive-table row
-	"des-kb-poweroff":        true, // intrinsic ProcSpawn (finding #8); no destructive-table row
-	"des-kb-reboot":          true, // intrinsic ProcSpawn (finding #8); no destructive-table row
-	"des-kb-shutdown":        true, // intrinsic ProcSpawn (finding #8); no destructive-table row
-	"des-sudo-touch-opt":     true, // wrapper elevation: severity carried by the PrivEsc effect (High), not a destructive-table row
-	"des-sudo-u-root-whoami": true, // wrapper elevation: severity carried by the PrivEsc effect (High), not a destructive-table row
-	"des-sudo-version":       true, // flag-only wrapper invocation: sound ⊤ degradation (accepted false positive, SECURITY.md); no destructive-table row
+	"des-b1-source":             true, // executes a file: carries a code-execution effect, not a destructive-table row
+	"des-b1-trap":               true, // trap action: lowered to ⊤, not a destructive-table row
+	"des-b2-unlink":             true, // single-file removal: reported via FSWrite
+	"des-b3-chattr":             true, // attribute change: reported via FSMeta
+	"des-b4-curl-exfil":         true, // credential exfiltration: reported via score.exfil, not the destructive table
+	"des-b4-scp-exfil":          true, // remote copy: reported via FSRead/FSWrite, not the destructive table
+	"des-b5-xz":                 true, // decompression overwrite: reported via FSWrite
+	"des-b6-apt":                true, // package install: reported via FSWrite
+	"des-b6-dpkg":               true, // package install: reported via FSWrite
+	"des-b8-chcon":              true, // SELinux label change: reported via FSMeta
+	"des-chmod-suid":            true, // chmod MODE carries no class (a mode-keyed row over-reported every chmod); reported via FSMeta
+	"des-kb-halt":               true, // intrinsic ProcSpawn (finding #8); no destructive-table row
+	"des-kb-poweroff":           true, // intrinsic ProcSpawn (finding #8); no destructive-table row
+	"des-kb-reboot":             true, // intrinsic ProcSpawn (finding #8); no destructive-table row
+	"des-kb-shutdown":           true, // intrinsic ProcSpawn (finding #8); no destructive-table row
+	"des-sudo-touch-opt":        true, // wrapper elevation: severity carried by the PrivEsc effect (High), not a destructive-table row
+	"des-sudo-u-root-whoami":    true, // wrapper elevation: severity carried by the PrivEsc effect (High), not a destructive-table row
+	"des-sudo-version":          true, // flag-only wrapper invocation: sound ⊤ degradation (accepted false positive, SECURITY.md); no destructive-table row
+	"des-sudo-u-hash0-whoami":   true, // wrapper elevation (#0 UID spelling): severity carried by the PrivEsc effect (High), not a destructive-table row
+	"des-sudo-repeated-u":       true, // repeated -u over an unresolved target: severity carried by the PrivEsc effect (High), not a destructive-table row
+	"des-sudo-sh-c":             true, // sudo over a code-execution sink: severity carried by the PrivEsc effect and the sink's ⊤, not a destructive-table row
+	"des-sudo-path-curl-shadow": true, // unpeeled path-qualified wrapper: sound ⊤ degradation (SECURITY.md), no destructive-table row
+	"des-sudo-l":                true, // inert flag-only invocation: sound ⊤ degradation (accepted false positive, SECURITY.md); no destructive-table row
 }
 
 // TestDestructiveClassCorpus is acceptance criterion A3 over the corpus: every

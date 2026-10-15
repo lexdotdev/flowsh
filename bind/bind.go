@@ -2,6 +2,26 @@
 // implies, by resolving the invoked name and binding its flags and operands
 // against the effect knowledge base.
 //
+// Two deliberate empty-result shapes for direct Bind/BindBash callers — Bind
+// reports no effects and no Conservative flag for either, and the ⊤
+// degradation for both is the frontend interpreter's (its wrapper-only path);
+// embedding consumers must treat such an empty result as covered upstream
+// rather than fail-open:
+//
+//   - an inert privilege-wrapper line that consumed the whole command line
+//     and names no command word (`sudo`, `sudo -k`, `sudo -l`, a command-less
+//     `sudo -u <user>` naming a non-root target) runs nothing — the -u
+//     spelling still names its target;
+//   - a fully-peeled wrapper chain with no command word left to bind whose
+//     privileged wrapper de-elevates (`env sudo -u nobody env`): the line
+//     runs, but unprivileged and effect-free, so nothing is claimed and
+//     nothing remains to analyse.
+//
+// A third shape is deliberately NOT empty: an inert wrapper line that still
+// carries command words (`sudo -l touch /x`) reports the ⊤ `CodeExec` effect
+// (with `Conservative` set) the frontend gives a consumed line, so the words
+// that follow cannot fabricate effects for a process that never starts.
+//
 // It is the join of the two lower layers:
 //
 //	front/bash ──normalized call──▶ bind ──▶ []engine.Effect
@@ -24,6 +44,7 @@ package bind
 import (
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/v0lka/flowsh/engine"
@@ -83,13 +104,17 @@ type EnvAssign struct {
 }
 
 // Wrapper is one command wrapper that was peeled off a call (sudo, env, …),
-// outermost first. Name is the wrapper's own name; Options are the option
-// words it carried, verbatim and always literal (the normalizer consumes a
-// wrapper's option value only when it is statically known, so `sudo -u $U`
-// keeps `-u` with no value); Pos is the position of the wrapper's own name
-// word, so the elevation an effect-carrying wrapper implies can be traced back
-// to its token. The inner command's own Name and Args are what remains of the
-// statement.
+// outermost first. Name is the wrapper's own name; Options are the wrapper's
+// literal option words: a value-taking option's statically known value is
+// recorded immediately after it, a dynamic one as the "@" placeholder (the
+// option stays unsatisfied, so the separated `sudo -u $U` and its absorbed
+// quoted twin `sudo -u"$U"` alike keep `-u` plus the placeholder, and
+// re-pairing never glues a following word as the value; only an unquoted
+// attached spelling like `sudo -u$U` stays the dynamically-named inner
+// command, its option recorded without a value); Pos is
+// the position of the wrapper's own name word, so the elevation an
+// effect-carrying wrapper implies can be traced back to its token. The inner
+// command's own Name and Args are what remains of the statement.
 type Wrapper struct {
 	Name    string           `json:"name"`
 	Options []Arg            `json:"options,omitempty"`
@@ -172,6 +197,10 @@ func (r *Result) Encode() ([]byte, error) {
 
 // Bind resolves and binds a single normalized call. It is total and
 // deterministic: it never returns nil and never panics on a well-formed Call.
+// For the two deliberate empty-result shapes of direct callers — an inert
+// privilege-wrapper line that consumed the whole command line, and a
+// fully-peeled wrapper chain whose privileged wrapper de-elevates — see the
+// package documentation.
 func (b *Binder) Bind(c *Call) *Result {
 	if c == nil {
 		return conservativeResult(StyleBash, "nil call", engine.ModeDirect)
@@ -180,13 +209,6 @@ func (b *Binder) Bind(c *Call) *Result {
 	var raw []engine.Effect
 	var ders []engine.Derivation
 
-	// Environment assignments (VAR=x cmd, env VAR=x cmd) mutate the environment.
-	for _, a := range c.Env {
-		ew := envWrite(a)
-		raw = append(raw, ew)
-		ders = append(ders, derive(ew, []engine.Atom{envVarAtom(a.Name, withFile(a.Pos, c.Pos.File))}, "env.write"))
-	}
-
 	if b == nil || b.k == nil {
 		r.Resolution = Resolution{Kind: ResolveUnknown, Invoked: callName(c)}
 		te := topEffect(engine.ModeDirect)
@@ -194,6 +216,13 @@ func (b *Binder) Bind(c *Call) *Result {
 		ders = append(ders, derive(te, []engine.Atom{commandAtom(callName(c), c.Pos)}, "code.exec"))
 		r.Conservative = true
 		r.Notes = append(r.Notes, "no knowledge base bound")
+		// Without a knowledge base nothing can be inert: report the
+		// environment writes as before the wrapper pass existed.
+		for _, a := range c.Env {
+			ew := envWrite(a)
+			raw = append(raw, ew)
+			ders = append(ders, derive(ew, []engine.Atom{envVarAtom(a.Name, withFile(a.Pos, c.Pos.File))}, "env.write"))
+		}
 		r.Effects = raw
 		r.Derivations = ders
 		normalizeResult(r)
@@ -204,18 +233,62 @@ func (b *Binder) Bind(c *Call) *Result {
 	// knowledge-base entry declares a PrivEsc parameter (sudo) elevates by its
 	// own command line, not by the inner command's — `sudo -u nobody touch /x`
 	// runs touch unprivileged, while bare `sudo touch /x` elevates to root.
-	for _, w := range c.Wrappers {
+	// The fired elevations are held back until the whole wrapper chain has
+	// spoken: an inert wrapper (`sudo -l …`) means no privileged command
+	// executes on the line, so no wrapper on it may claim an elevation.
+	inert := false
+	type firedElevation struct {
+		e     engine.Effect
+		atoms []engine.Atom
+	}
+	var fired []firedElevation
+	for i, w := range c.Wrappers {
 		kw, ok := b.k.Command(w.Name)
 		if !ok || !declaresPrivEsc(kw) {
 			continue
 		}
-		e, atoms, fires, notes := wrapperElevation(kw, w, c.Pos.File)
+		// Whether this wrapper has anything left to execute is decided at its
+		// own position in the chain, not for the chain as a whole: Wrappers
+		// are outermost-first, so what it would exec is the command word and
+		// the wrappers deeper in the chain — a wrapper above it (`env sudo
+		// -k`, `nohup sudo -k`) execs the privileged wrapper, not the other
+		// way round, and cannot keep its inert flag-only line alive.
+		innerPresent := c.NamePresent || i < len(c.Wrappers)-1
+		e, atoms, fires, notes, inertLine := wrapperElevation(kw, w, c.Pos.File, innerPresent)
 		r.Notes = append(r.Notes, notes...)
+		if inertLine {
+			inert = true
+		}
 		if !fires {
 			continue
 		}
-		raw = append(raw, e)
-		ders = append(ders, derive(e, atoms, ruleForKind(engine.KindPrivEsc)))
+		fired = append(fired, firedElevation{e: e, atoms: atoms})
+	}
+	if inert {
+		// Any inert wrapper decides the whole line — no privileged command
+		// executes — but an OUTER wrapper's -k note is appended per its own
+		// option list, before this chain-wide decision is known. Drop the
+		// "still runs" notes so a nested inert spelling (`sudo -k sudo -l`)
+		// cannot leave one report claiming both that the line runs and that
+		// nothing executes.
+		r.Notes = dropStillRunsNotes(r.Notes)
+	}
+	if !inert {
+		for _, f := range fired {
+			raw = append(raw, f.e)
+			ders = append(ders, derive(f.e, f.atoms, ruleForKind(engine.KindPrivEsc)))
+		}
+		// Environment assignments (VAR=x cmd, env VAR=x cmd) mutate the
+		// environment. An inert wrapper line runs nothing, so the binder's
+		// copy of the writes is suppressed with the rest of the line (the
+		// wrapper-donated writes the bash interpreter recorded at peel time
+		// are not retracted — an accepted precision residual, SECURITY.md
+		// Known Risks).
+		for _, a := range c.Env {
+			ew := envWrite(a)
+			raw = append(raw, ew)
+			ders = append(ders, derive(ew, []engine.Atom{envVarAtom(a.Name, withFile(a.Pos, c.Pos.File))}, "env.write"))
+		}
 	}
 
 	if !c.NamePresent {
@@ -224,10 +297,43 @@ func (b *Binder) Bind(c *Call) *Result {
 		} else {
 			r.Resolution = Resolution{Kind: ResolveEmpty}
 		}
+	} else if inert {
+		// The wrapper's own command line runs nothing (the `sudo -l` list
+		// form, an inert flag-only line): the words that follow name no
+		// executing process, so binding them as the "inner command" would
+		// fabricate effects for a process that never starts. Degrade to ⊤ —
+		// the same verdict the frontend gives a consumed command line — with
+		// the explanatory note already recorded above.
+		te := topEffect(engine.ModeDirect)
+		raw = append(raw, te)
+		ders = append(ders, derive(te, []engine.Atom{commandAtom(callName(c), c.Pos)}, "code.exec"))
+		r.Conservative = true
+		r.Resolution = Resolution{Kind: ResolveUnknown, Name: c.Name, Invoked: callName(c)}
 	} else {
 		res := b.resolve(c)
 		r.Resolution = res.res
-		if res.command != nil {
+		if res.command != nil && declaresWrapperPayload(res.command) {
+			// A privilege wrapper the frontend did not peel (a path-qualified
+			// `/usr/bin/sudo …`, a package-runner operand naming one): the
+			// wrapped command reached the binder only as the entry's payload
+			// positional, so its own effects — filesystem, network,
+			// credentials — are beyond binding. Degrade to ⊤ like an unknown
+			// command (the soundness this spelling had before wrapper
+			// elevation existed) instead of the entry's limited PrivEsc-only
+			// report, which would turn an unanalysable payload into a
+			// confident, narrow effect set. The note names the payload entry
+			// and the spelling it was reached through — a runner operand or a
+			// path is not itself the privilege wrapper.
+			te := topEffect(engine.ModeDirect)
+			raw = append(raw, te)
+			ders = append(ders, derive(te, []engine.Atom{commandAtom(callName(c), c.Pos)}, "code.exec"))
+			r.Conservative = true
+			if res.command.Name == callName(c) {
+				r.Notes = append(r.Notes, quote(res.command.Name)+": wrapped command not analyzable; assuming ⊤ (CodeExec)")
+			} else {
+				r.Notes = append(r.Notes, quote(res.command.Name)+" resolved behind "+quote(callName(c))+": wrapped command not analyzable; assuming ⊤ (CodeExec)")
+			}
+		} else if res.command != nil {
 			eff, ds, ms, unknown := b.bindCommand(res.command, res.args, c.StdinTaint, c.Pos)
 			if len(eff) == 0 {
 				// The name resolved to a KB command, but its invocation matched
@@ -611,13 +717,93 @@ func parseArgs(cmd *kb.Command, argv []Arg) ([]Arg, []match, []string) {
 // Wrapper elevation (refined -u)
 // ===========================================================================
 
+// rootUser is the user `sudo` elevates to by default, and the user a literal
+// `root` -u value names.
+const rootUser = "root"
+
+// sudoName is the wrapper whose inert-line semantics wrapperElevation models:
+// the only privilege wrapper in the knowledge base today.
+const sudoName = "sudo"
+
+// userTargetClass classifies a literal -u/--user value the way sudo spells
+// targets: `root` names root; `#N` names the numeric UID N (32-bit; the
+// reserved -1 spelling `#4294967295` is sudo-invalid, as is any value beyond
+// the range); a bare digit string
+// is compared by its numeric value too, so `0` and `00` name root exactly like
+// `#0` does (sudo itself spells a UID with the `#` prefix and would read a bare
+// `0` as a username, but claiming root for it is the safe over-report —
+// documented by the elevation matrix test); any other value is a username. The
+// direction asymmetry is intentional: a #-spelling carries sudo's rejection in
+// its syntax, so no direction is claimed; a bare word is syntactically a valid
+// username whose existence the analysis cannot check, so the de-elevation claim
+// reads the text as written — and if the user does not exist, sudo runs
+// nothing and the claim still holds. A whitespace-only value can still pass
+// here (the inert-note path); an empty one or the "@" placeholder is
+// intercepted upstream.
+type userTargetClass int
+
 const (
-	// rootUser is the user `sudo` elevates to by default, and the user a
-	// literal `root` or `0` -u value names.
-	rootUser = "root"
-	// rootUID is the numeric spelling of root accepted by `sudo -u`.
-	rootUID = "0"
+	targetRoot userTargetClass = iota
+	targetNumericNonRoot
+	targetName
+	// targetMalformedSpec is a #-prefixed value that is not a valid numeric
+	// UID (`#`, `#-1`, `#abc`): sudo rejects it, so no direction is claimed.
+	targetMalformedSpec
 )
+
+// classifyUserTarget classifies a literal -u/--user value into a
+// userTargetClass; the doctrine — what each class claims and why — lives on
+// the type.
+func classifyUserTarget(v string) userTargetClass {
+	if strings.TrimSpace(v) == "" || strings.TrimSpace(v) != v || strings.HasPrefix(v, "+") {
+		// Whitespace-padded, whitespace-only, or a leading `+`: sudo rejects
+		// these, so no direction is claimed.
+		return targetMalformedSpec
+	}
+	if v == "@" {
+		// The frontend's placeholder for a dynamic option value: never a
+		// user name, no direction claimed.
+		return targetMalformedSpec
+	}
+	spec := strings.TrimPrefix(v, "#")
+	digits := spec != ""
+	for i := 0; i < len(spec); i++ {
+		if spec[i] < '0' || spec[i] > '9' {
+			digits = false
+			break
+		}
+	}
+	if !digits {
+		if strings.HasPrefix(v, "#") {
+			return targetMalformedSpec
+		}
+		// User-name lookup is case-insensitive on some systems (macOS local
+		// accounts, AD/LDAP backends), so any case spelling of root claims
+		// root: correct where the lookup folds case, the safe over-report
+		// where the name does not exist.
+		if strings.EqualFold(v, rootUser) {
+			return targetRoot
+		}
+		return targetName
+	}
+	// Linux UIDs are 32-bit and 4294967295 (uid_t's -1) is reserved — the
+	// CVE-2019-14287 spelling. A #-spelling naming it is sudo-invalid, so no
+	// direction is claimed; a bare spelling stays a username.
+	u, err := strconv.ParseUint(spec, 10, 32)
+	if err != nil {
+		if strings.HasPrefix(v, "#") {
+			return targetMalformedSpec
+		}
+		return targetName
+	}
+	if u == 0 {
+		return targetRoot
+	}
+	if strings.HasPrefix(v, "#") && u == 1<<32-1 {
+		return targetMalformedSpec
+	}
+	return targetNumericNonRoot
+}
 
 // declaresPrivEsc reports whether a knowledge-base command declares any
 // PrivEsc parameter — the predicate that makes the binder treat a peeled-off
@@ -635,60 +821,416 @@ func declaresPrivEsc(cmd *kb.Command) bool {
 	return false
 }
 
+// declaresWrapperPayload reports whether a knowledge-base command models its
+// payload — the WRAPPED command line — as a Direct privilege-escalation
+// COMMAND positional (sudo's COMMAND): a call resolved onto such an entry
+// without the frontend peeling the wrapper (a path-qualified `/usr/bin/sudo …`)
+// has handed the whole wrapped argv to that slot, so nothing beyond it is
+// bindable and the call degrades to ⊤. Entries whose PrivEsc declarations name
+// their own operands instead (yarn's `global` positional, `install -m`, su's
+// USER, chroot's NEWROOT — and the COMMAND positionals of chroot/runuser,
+// which are ProcSpawn) do not match: those argv stay fully bindable.
+func declaresWrapperPayload(cmd *kb.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	for _, p := range cmd.Params {
+		if p.Kind == kb.ParamPositional && p.Spec == "COMMAND" &&
+			p.Effect.Kind == engine.KindPrivEsc && p.Effect.Mode == engine.ModeDirect {
+			return true
+		}
+	}
+	return false
+}
+
 // wrapperElevation binds a PrivEsc-declaring wrapper's own command line (its
 // option words against the wrapper's knowledge-base entry) and lowers it by the
-// refined -u doctrine:
+// refined -u doctrine. The doctrine models sudo — today the only KB entry
+// whose COMMAND positional is PrivEsc/Direct (pinned by the grammar-layer
+// test); a future privilege wrapper (doas, pkexec) with different semantics
+// must split it consciously:
 //
-//   - no -u/--user at all, or a literal root|0 value: the escalation is
-//     certain (Direct) and targets root;
-//   - a literal non-root value: the wrapped command runs unprivileged — no
-//     elevation fires, and a note says why;
-//   - a value that is missing or not statically known: the escalation is
-//     still certain, but its target user is unresolved — Direct over ⊤.
-//     Sound: sudo's -u never softens, and the ⊤ target is a target question,
-//     not unknown code execution, so Result.Conservative is never touched.
+//   - no -u/--user at all, or a literal value naming root (`root`, and the
+//     numeric spellings `0`, `00`, `#0`): the escalation is certain (Direct)
+//     and targets root;
+//   - a literal value naming any other valid target (a username, or a numeric
+//     UID other than 0): the wrapped command runs unprivileged — no elevation
+//     fires, and a note says why;
+//   - a value that is missing, not statically known, option-shaped (the glued
+//     token of an unsatisfied -u: `sudo -u $U -g root`), or a #-spelling sudo
+//     would reject (`#abc`): the escalation stays certain but its target user
+//     is unresolved — Direct over ⊤, with a note where the value lied;
+//   - more than one -u/--user (`sudo -u a -u b`): sudo documents value-taking
+//     options as single-use and does not spell out the behavior on violation,
+//     so the doctrine resolves nothing: the escalation stays certain over a
+//     ⊤ target and a note reports the ambiguity.
 //
-// Other PrivEsc options (-g/--group) neither decide nor elevate: only the
-// target user makes the call privileged (a bare `sudo -g wheel cmd` still runs
-// as root). The derivation cites the wrapper's own name, the -u token and its
-// value — all at the wrapper's position — so the why-trace names the concrete
-// premise. Unrecognized wrapper flags surface as a note, never silently.
-func wrapperElevation(cmd *kb.Command, w Wrapper, file string) (e engine.Effect, atoms []engine.Atom, fires bool, notes []string) {
-	_, matches, unknown := parseArgs(cmd, w.Options)
-	if len(unknown) > 0 {
-		notes = append(notes, w.Name+": unrecognized flag(s): "+strings.Join(dedup(unknown), " "))
+// A line that names nothing to execute never elevates: the `-l` list form
+// runs nothing even with a command word following, and any inert flag-only
+// form (`sudo -v`, `-k`, `-K`, `-h`, `-V`, `--version` — nothing inside the
+// wrapper and no shell-implying `-i`/`-s`) decides nothing. innerPresent is
+// that answer for this wrapper's own position, decided by the caller: the
+// command word and the wrappers deeper in the chain are what it would exec
+// (`sudo env FOO=1` runs env as root), a wrapper above it (`env sudo -k`)
+// is not — it execs the privileged wrapper, not the other way round. No
+// elevation and no
+// de-elevation of an inner run is claimed for them; a named -u target is
+// still reported for completeness. In that case the elevation reports inert:
+// the caller must not bind the words that follow, or it would fabricate
+// effects for a process that never starts; the ⊤ degradation (the frontend's
+// for a consumed command line, the caller's own otherwise) already covers
+// their report.
+//
+// `-g`/`--group` never decides nor elevates: by man sudo a bare `-g` runs the
+// command as the invoking user with only the primary group replaced, and with
+// `-u` present the target user decides. Group escalation is not modelled — a
+// matched `-g` value contributes a note saying so.
+//
+// Sound: the escalation's certainty follows sudo's own -u semantics (it never
+// softens), and a ⊤ target is a target question, not unknown code execution,
+// so Result.Conservative is never touched. The derivation cites the wrapper's
+// own name, the -u token and its value — all at the wrapper's position — so
+// the why-trace names the concrete premise. Unrecognized wrapper flags surface
+// as a note, never silently. When the elevation does not fire, no atoms are
+// returned: the caller ignores them, and an unexplained non-nil set would be
+// a contract smell.
+// dropStillRunsNotes removes the -k "the command still runs" notes a wrapper
+// appends per its own option list, before the chain-wide inert decision is
+// known (see Bind). The suffix is the note's own contract; only the -k note
+// ever asserts that the line runs.
+func dropStillRunsNotes(notes []string) []string {
+	kept := notes[:0]
+	for _, n := range notes {
+		if strings.HasSuffix(n, "the command still runs") {
+			continue
+		}
+		kept = append(kept, n)
+	}
+	return kept
+}
+
+func wrapperElevation(cmd *kb.Command, w Wrapper, file string, innerPresent bool) (e engine.Effect, atoms []engine.Atom, fires bool, notes []string, inert bool) {
+	// Unwrap records a value-taking option and its absorbed value as adjacent
+	// words; parseArgs re-pairs a MODELLED option with its absorbed value.
+	// An UNMODELLED value-taking option's absorbed word is blanked to "@"
+	// instead — it is data, never a free-standing flag, whether or not it
+	// spells a knowledge-base spec (`sudo -p -l cmd` — -p takes -l as its
+	// prompt — really runs cmd as root; a value-constrained option like -C
+	// instead makes sudo usage-error and run nothing — the parse-level
+	// decision is identical either way). (A value that was not statically
+	// known was never recorded; the blanking then hits the next recorded
+	// word — the over-approximation only affects that spelling, in the safe
+	// over-report direction.)
+	var opts []Arg
+	valueNext := false
+	ownerUnmodelled := false
+	ownerSpec := ""
+	// hostNamed records that a -h/--host spelling carried a host value (the
+	// separate-value form the walk below absorbs): `sudo -h host` names a
+	// remote host, unlike a bare `-h`, which only prints help. The binder
+	// re-walks the recorded option words itself (the frontend's pairing is not
+	// on the seam), so it is the only place that can tell the two apart.
+	hostNamed := false
+	for _, o := range w.Options {
+		if valueNext {
+			valueNext = false
+			if ownerUnmodelled {
+				if ownerSpec == "-h" || ownerSpec == "--host" {
+					hostNamed = true
+				}
+				opts = append(opts, Arg{Value: "@", Literal: true})
+				// The absorbed word was data, never a free-standing flag —
+				// name the consumption, whatever the word was (`sudo -C -l
+				// cmd` consumes -l as -C's value; `sudo -C -u nobody cmd`
+				// consumes -u).
+				notes = append(notes, w.Name+": "+ownerSpec+" consumed the following word as its value; nothing about it decides this line")
+				// -D/--chdir and -R/--chroot relocate the path context the
+				// wrapped command's operands resolve in; the model does not
+				// carry it, so the report says so instead of staying silent.
+				switch ownerSpec {
+				case "-D", "--chdir":
+					notes = append(notes, w.Name+": -D/--chdir changes the working directory; operand paths resolve under it (path context not modelled)")
+				case "-R", "--chroot":
+					notes = append(notes, w.Name+": -R/--chroot changes the root directory; operand paths change meaning (path context not modelled)")
+				}
+			} else {
+				opts = append(opts, o)
+			}
+			continue
+		}
+		opts = append(opts, o)
+		if o.Literal && bash.SudoValueOpts(o.Value) {
+			valueNext = true
+			_, known := cmd.Param(o.Value)
+			ownerUnmodelled = !known
+			ownerSpec = o.Value
+		}
+	}
+	_, matches, unknown := parseArgs(cmd, opts)
+	// The print-and-exit and usage-error spellings are unknown to the
+	// knowledge base by design (pinned by kb's inert-spellings test): they
+	// must not surface as "unrecognized flag(s)" — sudo recognizes every one
+	// of them, and the inert note below names them accurately. -k is equally
+	// recognized, but unlike -v/-K it runs the command, so it only gets its
+	// own explanatory note. The inert semantics collected here are sudo's own;
+	// if a second privilege wrapper ever joins the knowledge base, key this
+	// table on the wrapper's name rather than sharing it.
+	var inertUnknown []string
+	rest := make([]string, 0, len(unknown))
+	if w.Name == sudoName {
+		for _, spec := range unknown {
+			switch spec {
+			case "--version", "-V", "--help", "-h", "--host", "-v", "-K", "-k", "-U", "--other-user":
+				inertUnknown = append(inertUnknown, spec)
+			default:
+				rest = append(rest, spec)
+			}
+		}
+	} else {
+		rest = append(rest, unknown...)
+	}
+	if len(rest) > 0 {
+		// The wrapper surface reports the knowledge base's modelling, not
+		// sudo's own flag table: an unmodelled flag is not one sudo rejects.
+		notes = append(notes, w.Name+": flags not modelled by the knowledge base: "+strings.Join(dedup(rest), " "))
 	}
 
 	loc := withFile(w.Pos, file)
 	atoms = []engine.Atom{commandAtom(w.Name, loc)}
 
-	var user *match
+	var (
+		user      *match
+		userCount int
+		group     *match
+		shellFlag bool
+		listOnly  bool
+		listSpec  string
+		printExit string
+		usageErr  string
+	)
 	for i := range matches {
-		if matches[i].param.Effect.Kind != engine.KindPrivEsc {
+		m := &matches[i]
+		if m.param.Effect.Kind != engine.KindPrivEsc {
 			continue
 		}
-		if matches[i].param.Spec == "-u" || matches[i].param.Spec == "--user" {
-			user = &matches[i]
+		switch m.param.Spec {
+		case "-u", "--user":
+			if user == nil {
+				user = m
+			}
+			userCount++
+		case "-g", "--group":
+			group = m
+		case "-i", "-s":
+			shellFlag = true
+		case "-l", "--list":
+			listOnly = true
+			listSpec = m.param.Spec
+		}
+	}
+	// Spellings sudo documents as running nothing, but which the knowledge
+	// base does not model as parameters, end the inert-line decision too:
+	//   - --version/-V/--help print and exit, with or without a command word;
+	//   - -h names a remote host, which sudo only accepts when listing
+	//     privileges, so a line carrying it either lists or usage-errors;
+	//   - -v only validates credentials and -K cannot be combined with a
+	//     command — with a command word the line usage-errors.
+	// With a command word present, none of them executes anything. (-k runs
+	// the command; only its note below differs from the plain unknown flags.)
+	for _, spec := range inertUnknown {
+		// Among the unmodelled inert spellings the first in argument order
+		// decides the line; later ones yield (every outcome is the same
+		// inert ⊤ — only the note's attribution follows the deciding
+		// spelling). A modelled `-l`/`--list` decides over all of them,
+		// whatever its position.
+		switch spec {
+		case "--version", "-V", "--help":
+			if !listOnly {
+				listOnly = true
+				printExit = spec
+			}
+		case "-h", "--host", "-U", "--other-user":
+			// -h is help or a remote host; --host/-U/--other-user are only
+			// valid in conjunction with -l. The sudoers policy runs no
+			// remote commands, so none of them executes a command. Only a
+			// bare -h (no absorbed host value and no command word) is the
+			// help reading; a host-naming spelling is never.
+			if !listOnly {
+				listOnly = true
+				switch {
+				case spec == "-h" && !hostNamed && !innerPresent:
+					usageErr = "-h prints help and exits"
+				case spec == "-h":
+					usageErr = "-h prints help or names a remote host; the sudoers policy runs no remote commands"
+				case spec == "--host":
+					usageErr = "--host names a remote host; only valid in conjunction with -l; the sudoers policy runs no remote commands"
+				default:
+					usageErr = spec + " is only valid in conjunction with -l"
+				}
+			}
+		case "-v", "-K":
+			if !listOnly {
+				listOnly = true
+				switch {
+				case innerPresent:
+					usageErr = spec + " runs no command in combination with a command word"
+				case spec == "-v":
+					usageErr = "-v refreshes cached credentials and runs no command"
+				default:
+					usageErr = "-K invalidates every cached credential and runs no command"
+				}
+			}
+		}
+		if listOnly {
 			break
 		}
 	}
+	for _, spec := range inertUnknown {
+		// -k's "still runs" note is only truthful when the line is not
+		// decided inert by another spelling; on a listing line the inert
+		// note stands alone. It must also agree with the inert-line guard
+		// below: a shell-implying -i/-s keeps the line alive (sudo runs a
+		// root shell), so -k beside it resets credentials and executes
+		// anyway — never the "runs no command" a shell-flag-blind reading
+		// would claim beside the elevation the line still carries.
+		if spec == "-k" && !listOnly {
+			if innerPresent || shellFlag {
+				notes = append(notes, w.Name+": -k resets cached credentials; the command still runs")
+			} else {
+				// The line is inert (the guard below cannot but take the
+				// early return), so this note stands beside the ⊤ verdict
+				// and qualifies it like its inert siblings.
+				notes = append(notes, w.Name+": -k invalidates cached credentials and runs no command; nothing is executed — the report degrades to ⊤ (CodeExec)")
+			}
+			break
+		}
+	}
+	// A matched -g/--group replaces the primary group "in either case" (man
+	// sudo) — with a literal, dynamic or skipped value alike — so the
+	// unmodelled membership gain is named whenever the option is present.
+	groupNote := group != nil
+
+	if listOnly {
+		switch {
+		case printExit != "":
+			notes = append(notes, w.Name+": "+printExit+" prints help/version, or usage-errors with a command word; nothing is executed — the report degrades to ⊤ (CodeExec)")
+		case usageErr != "":
+			notes = append(notes, w.Name+": "+usageErr+"; nothing is executed — the report degrades to ⊤ (CodeExec)")
+		default:
+			notes = append(notes, w.Name+": "+listSpec+" only lists permissions; nothing is executed — the report degrades to ⊤ (CodeExec)")
+		}
+		return engine.Effect{}, nil, false, notes, true
+	}
+	if !innerPresent && !shellFlag {
+		// Nothing on this line runs under sudo (the inert flag-only forms).
+		// A -u target is still named — real sudo usage-errors on the missing
+		// command, so the note stays accurate — but no elevation and no
+		// de-elevation of any inner run is claimed.
+		if userCount > 1 {
+			notes = append(notes, w.Name+": multiple -u/--user options; target user unresolved")
+		}
+		if userCount == 1 && user != nil && !user.hasVal {
+			// A trailing bare `-u`/`--user` with no following word: real sudo
+			// usage-errors on the missing argument — name it like the other
+			// sudo-rejected spellings below.
+			notes = append(notes, w.Name+": -u/--user requires a value; nothing runs on this line")
+		}
+		// A literal value is named whatever its content — including the
+		// statically-empty one (`-u ''`, `--user=`), which sudo rejects:
+		// staying silent for it would leave the one user-bearing spelling
+		// with no user note on an inert line (classifyUserTarget reads the
+		// empty value as a malformed specification).
+		if userCount == 1 && user != nil && user.hasVal && user.value.Literal {
+			if user.value.Value == "@" {
+				// The frontend's placeholder for a dynamic value — never
+				// script text; keep it out of the user-facing note.
+				notes = append(notes, w.Name+": target user is not statically known; nothing runs on this line")
+			} else if strings.HasPrefix(user.value.Value, "-") {
+				// An option-shaped "value" is a token sudo reads as a flag,
+				// never a user name — the glue after an unsatisfied -u, or a
+				// literal sudo rejects; same doctrine as the elevation branch.
+				notes = append(notes, w.Name+": target user "+quote(user.value.Value)+" is not a valid user specification; nothing runs on this line")
+			} else {
+				switch classifyUserTarget(user.value.Value) {
+				case targetRoot:
+					notes = append(notes, w.Name+": target user "+quote(user.value.Value)+" is root; nothing runs on this line")
+				case targetMalformedSpec:
+					notes = append(notes, w.Name+": target user "+quote(user.value.Value)+" is not a valid user specification; nothing runs on this line")
+				default:
+					notes = append(notes, w.Name+": target user "+quote(user.value.Value)+" is not root; nothing runs on this line")
+				}
+			}
+		}
+		return engine.Effect{}, nil, false, notes, true
+	}
 
 	target := engine.ScopeOf(rootUser)
-	if user != nil {
+	switch {
+	case userCount > 1:
+		atoms = append(atoms, flagAtom(user.param.Spec, loc))
+		target = engine.ScopeTop()
+		notes = append(notes, w.Name+": multiple -u/--user options; target user unresolved")
+	case user != nil:
 		atoms = append(atoms, flagAtom(user.param.Spec, loc))
 		v := user.value
 		switch {
-		case !user.hasVal || !v.Literal || v.Value == "":
-			// The value was not statically known: the escalation is certain,
-			// its target user unknown (⊤).
+		case !user.hasVal || !v.Literal || v.Value == "@":
+			// The value was not statically known — or it is the frontend's
+			// "@" placeholder for a dynamic value, which is never script
+			// text: the escalation is certain, its target user unknown (⊤).
 			target = engine.ScopeTop()
-		case v.Value == rootUser || v.Value == rootUID:
-			atoms = append(atoms, operandAtom(v.Value, loc))
+		case v.Value == "":
+			// A statically-empty target: sudo rejects it — say so, like the
+			// other sudo-rejected spellings.
+			target = engine.ScopeTop()
+			notes = append(notes, w.Name+": target user "+quote(v.Value)+" is not a valid user specification; assuming a privileged target")
+		case strings.HasPrefix(v.Value, "-"):
+			// An option-shaped "value" is a token sudo reads as a flag, not a
+			// user name — either the glue after an unsatisfied -u (`sudo -u
+			// $U -g root`) or a literal sudo rejects (`sudo -u -1`). Never
+			// trusted as a user name.
+			target = engine.ScopeTop()
+			gp, isSpec := cmd.Param(v.Value)
+			switch {
+			case isSpec && (gp.Spec == "-u" || gp.Spec == "--user"):
+				// A glued repeat (`sudo -u $U -u root`): the same ambiguity
+				// as the separated spelling.
+				notes = append(notes, w.Name+": multiple -u/--user options; target user unresolved")
+			case isSpec && (gp.Spec == "-g" || gp.Spec == "--group"):
+				// The token is a group spec in sudo's grammar, but on this
+				// line it was glued to the unsatisfied -u — whether as that
+				// option's value or as part of the spelling, the target user
+				// is unresolved either way.
+				notes = append(notes, w.Name+": the glued -u absorbed the following -g as its value; target user unresolved (group escalation is not modelled)")
+			case isSpec:
+				notes = append(notes, w.Name+": the glued -u absorbed the following option as its value; target user unresolved")
+			default:
+				notes = append(notes, w.Name+": target user "+quote(v.Value)+" is not a valid user specification; assuming a privileged target")
+			}
 		default:
-			// A literal unprivileged user: no elevation at all.
-			notes = append(notes, w.Name+": target user "+quote(v.Value)+" is not root; no privilege escalation")
-			return engine.Effect{}, atoms, false, notes
+			switch classifyUserTarget(v.Value) {
+			case targetRoot:
+				atoms = append(atoms, operandAtom(v.Value, loc))
+			case targetNumericNonRoot, targetName:
+				// A literal target that is not root: no elevation at all.
+				notes = append(notes, w.Name+": target user "+quote(v.Value)+" is not root; no privilege escalation")
+				if groupNote {
+					notes = append(notes, w.Name+": -g sets only the primary group (group escalation is not modelled)")
+				}
+				return engine.Effect{}, nil, false, notes, false
+			case targetMalformedSpec:
+				target = engine.ScopeTop()
+				notes = append(notes, w.Name+": target user "+quote(v.Value)+" is not a valid user specification; assuming a privileged target")
+			}
 		}
+	case group != nil:
+		// A bare -g/--group (no -u): by man sudo the command runs as the
+		// INVOKING user with only the primary group replaced — no escalation.
+		notes = append(notes, w.Name+": -g without -u runs the command as the invoking user; no privilege escalation (group escalation is not modelled)")
+		return engine.Effect{}, nil, false, notes, false
+	}
+	if groupNote {
+		notes = append(notes, w.Name+": -g sets only the primary group (group escalation is not modelled)")
 	}
 
 	e = engine.Effect{
@@ -699,7 +1241,7 @@ func wrapperElevation(cmd *kb.Command, w Wrapper, file string) (e engine.Effect,
 		Taint:      engine.TaintBottom(),
 		Reversible: kb.DefaultReversible(engine.KindPrivEsc),
 	}
-	return e, atoms, true, notes
+	return e, atoms, true, notes, false
 }
 
 // lowerParam lowers one matched parameter into the effects it contributes. Most
@@ -1435,9 +1977,12 @@ func FromBash(cmd *bash.Command, prog *bash.Program) *Call {
 		}
 		bw := Wrapper{Name: w.Name,
 			Pos: engine.SourceLoc{Line: w.Pos.Line, Col: w.Pos.Col}}
-		// The normalizer only records literal option words (a wrapper's
-		// dynamic option value stops the peel, leaving the option unsatisfied),
-		// so every option lowers as a literal argument word.
+		// The normalizer records a wrapper's literal option words; a
+		// non-literal option value is replaced by a "@" placeholder (the
+		// option stays unsatisfied, and the binder's re-pairing can never
+		// glue a following word as the value), and the peel continues with
+		// the following words, so every recorded option lowers as a literal
+		// argument word.
 		for _, o := range w.Options {
 			bw.Options = append(bw.Options, Arg{Value: o, Literal: true})
 		}

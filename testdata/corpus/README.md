@@ -14,7 +14,7 @@ documentation, not data — the loader reads only `*.json`.
 | `benign_bash.json` | `benign` | precision control (no ⊤/conservative) |
 | `ps_cases.json` | `ps` | PowerShell-specific recall cases |
 | `resolution_bash.json` | `resolution` | A2 name-resolution chain |
-| `sudo_bash.json` | `destructive`, `benign` | sudo wrapper elevation (the refined `-u` doctrine): Direct PrivEsc on elevating invocations, de-elevation on an explicit non-root target, and the flag-only `sudo --version` pinned as an accepted ⊤ false positive (SECURITY.md, Known Risks) |
+| `sudo_bash.json` | `destructive`, `benign` | sudo wrapper elevation (the refined `-u` doctrine): Direct PrivEsc on elevating invocations (including the `#0` UID spelling), de-elevation on an explicit non-root target, the repeated `-u` over an unresolved target (specs/domains/binding.md), the unpeeled path-qualified wrapper and the flag-only `sudo --version`/`sudo -l` pinned as accepted ⊤ false positives (SECURITY.md, Known Risks), bare `-g` bound as the invoking user, and the privilege wrapper over a code-execution sink (`sudo sh -c …`) |
 | `external_bash.json`, `external_posh.json` | `external_malicious`, `external_benign` | balanced sample (26+26 bash, 54+54 PowerShell) drawn from public labeled datasets |
 
 ## The external set (provenance & methodology)

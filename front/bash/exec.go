@@ -1548,7 +1548,7 @@ func (it *interp) execCall(c *syntax.CallExpr) {
 			// the binding layer, so the wrapper-only call still goes through
 			// the resolver seam (sudo -i runs a root shell even without an
 			// inner command).
-			it.elevateWrappers(cmd)
+			it.elevateWrappers(cmd, effStart)
 		}
 		it.stdout, it.stdoutKnown = "", true
 		return
@@ -1563,38 +1563,106 @@ func (it *interp) execCall(c *syntax.CallExpr) {
 	} else {
 		it.stdout, it.stdoutKnown = "", false
 	}
-	it.dispatch(name, nameOK, argv, cmd)
+	it.dispatch(name, nameOK, argv, cmd, effStart)
 	it.stdoutTaint = outTaintOf(it.effs[effStart:], it.stdinTaint)
 }
 
 // elevateWrappers consults the resolver for a call that never reaches the
 // ordinary binding path — the wrapper consumed the whole command line, or the
-// inner command's name is not statically known. The elevation knowledge for
-// privilege wrappers (sudo) lives in the binding layer, so the call still goes
-// through the seam: the binder reports the wrapper's own effects (PrivEsc for
-// sudo, per the refined -u doctrine) and, for a dynamically-named inner
-// command, its own ⊤ on top. A nil resolver contributes nothing.
-func (it *interp) elevateWrappers(cmd *Command) {
+// inner command's name is not statically known, or the inner call is a
+// code-execution sink or code-executing builtin (those branches return before
+// the ordinary resolver consult). The elevation knowledge for privilege
+// wrappers (sudo) lives in the binding layer, so the call still goes through
+// the seam: the binder reports the wrapper's own effects (PrivEsc for sudo,
+// per the refined -u doctrine) and, for a dynamically-named inner command, its
+// own ⊤ on top. A ⊤ CodeExec the interpreter has already derived FOR THE SAME
+// STATEMENT (the effects from effStart on) subsumes the binder's own ⊤ —
+// Report.Normalize keys the merge on the flow role, so adding both would
+// report the same unknown execution twice. Callers must have derived their own
+// interpreter-side ⊤ first, which is what makes the subsumption sound; the
+// statement boundary keeps an earlier statement's ⊤ from suppressing this
+// statement's binder evidence. A nil resolver contributes nothing.
+func (it *interp) elevateWrappers(cmd *Command, effStart int) {
 	if it.res == nil || len(cmd.Wrappers) == 0 {
 		return
 	}
 	bound := it.res(cmd, it.resolutionProgram())
+	// The seam is consulted here for the wrapper's own elevation evidence.
+	// A result without a PrivEsc effect has nothing this path needs: in
+	// particular its unresolved-inner ⊤ (the interpreter deliberately skips
+	// shell-only builtins and code-execution names) must not fabricate a
+	// Critical verdict for benign `env true`-style lines — such a line runs
+	// effect-free, and the elevation knowledge is exactly what is absent.
+	hasElevation := false
+	for _, e := range bound.Effects {
+		if e.Kind == engine.KindPrivEsc {
+			hasElevation = true
+			break
+		}
+	}
+	if !hasElevation {
+		return
+	}
+	if hasTopCodeExec(it.effs[effStart:]) {
+		bound.Effects = dropTopCodeExec(bound.Effects)
+		bound.Derivations = dropTopCodeExecDerivations(bound.Derivations)
+	}
 	it.effs = append(it.effs, bound.Effects...)
 	it.ders = append(it.ders, bound.Derivations...)
+}
+
+// hasTopCodeExec reports whether the given statement-scoped effect slice
+// already records a ⊤ CodeExec effect, under any network-flow role.
+func hasTopCodeExec(effs []engine.Effect) bool {
+	for _, e := range effs {
+		if e.Kind == engine.KindCodeExec && e.Target.IsTop() {
+			return true
+		}
+	}
+	return false
+}
+
+// dropTopCodeExec removes the ⊤ CodeExec effects from a binder result, keeping
+// the rest in order. The copies are fresh slices: the seam contract makes the
+// result owned by the caller, and a non-mutating filter keeps that true even
+// if a resolver ever returns shared backing arrays.
+func dropTopCodeExec(effs []engine.Effect) []engine.Effect {
+	kept := make([]engine.Effect, 0, len(effs))
+	for _, e := range effs {
+		if e.Kind == engine.KindCodeExec && e.Target.IsTop() {
+			continue
+		}
+		kept = append(kept, e)
+	}
+	return kept
+}
+
+// dropTopCodeExecDerivations removes the derivations that justify the ⊤
+// CodeExec effects dropTopCodeExec removed, so no why-trace is left pointing
+// at a dropped effect.
+func dropTopCodeExecDerivations(ders []engine.Derivation) []engine.Derivation {
+	kept := make([]engine.Derivation, 0, len(ders))
+	for _, d := range ders {
+		if d.Effect.Kind == engine.KindCodeExec && d.Effect.Target.IsTop() {
+			continue
+		}
+		kept = append(kept, d)
+	}
+	return kept
 }
 
 // dispatch applies the name-resolution chain with the interpreter's own state:
 // aliases are expanded, functions are executed, code-execution sinks and
 // code-executing builtins yield ⊤, and every other command's effects come from
 // the resolver.
-func (it *interp) dispatch(name string, nameOK bool, argv []string, cmd *Command) []engine.Effect {
+func (it *interp) dispatch(name string, nameOK bool, argv []string, cmd *Command, effStart int) []engine.Effect {
 	if !nameOK {
 		e := it.markTopEffectFlow("dynamically-named command", it.sinkFlowRole(cmd))
 		it.derive(e, engine.Atom{Kind: engine.AtomCommand, Text: cmd.Name, Loc: sourceLoc(cmd.Pos, it.prog.File)})
 		// A privilege wrapper over a dynamically-named command (sudo "$X")
 		// still elevates: consult the resolver seam for the wrapper's own
 		// effects even though the inner name cannot be bound.
-		it.elevateWrappers(cmd)
+		it.elevateWrappers(cmd, effStart)
 		it.statusKnown = false
 		return nil
 	}
@@ -1637,6 +1705,10 @@ func (it *interp) dispatch(name string, nameOK bool, argv []string, cmd *Command
 	if sink := sinkName(name, argv); sink != "" {
 		e := it.markTopEffectFlow("code-execution sink "+strconv.Quote(sink), it.sinkFlowRole(cmd))
 		it.derive(e, engine.Atom{Kind: engine.AtomCommand, Text: sink, Loc: sourceLoc(cmd.Pos, it.prog.File)})
+		// A privilege wrapper over a sink (`sudo sh -c …`) still elevates:
+		// consult the resolver seam for the wrapper's own effects even though
+		// the sink branch never reaches the ordinary binding flow.
+		it.elevateWrappers(cmd, effStart)
 		it.setStatus(name)
 		return nil
 	}
@@ -1650,12 +1722,20 @@ func (it *interp) dispatch(name string, nameOK bool, argv []string, cmd *Command
 	if isCodeExecBuiltin(name) && (name != "trap" || trapHasAction(argv)) {
 		e := it.markTopEffectFlow("code-executing builtin "+strconv.Quote(name), it.sinkFlowRole(cmd))
 		it.derive(e, engine.Atom{Kind: engine.AtomCommand, Text: name, Loc: sourceLoc(cmd.Pos, it.prog.File)})
+		// A privilege wrapper over a code-executing builtin (`sudo eval …`)
+		// still elevates: consult the resolver seam for the wrapper's own
+		// effects even though this branch never reaches the ordinary binding
+		// flow.
+		it.elevateWrappers(cmd, effStart)
 		it.setStatus(name)
 		return nil
 	}
 
 	// builtins that are pure shell state: they have no external effect, so
-	// asking the knowledge base about them would only produce a spurious ⊤.
+	// asking the knowledge base about them would only produce a spurious ⊤,
+	// and no elevation is claimed for them either (`sudo true` reports a
+	// benign empty report — a documented precision residual, SECURITY.md
+	// Known Risks).
 	if isShellOnlyBuiltin(name) {
 		switch name {
 		case "break":

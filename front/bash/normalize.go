@@ -749,7 +749,8 @@ func optSet(opts ...string) map[string]bool {
 // wrapperSpecs is the closed set of recognized wrappers.
 var wrapperSpecs = map[string]*wrapperSpec{
 	WrapSudo: {
-		valueOpts: optSet("-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt",
+		valueOpts: optSet("-u", "--user", "-g", "--group", "-h", "--host", "-D", "--chdir",
+			"-R", "--chroot", "-p", "--prompt",
 			"-C", "--close-from", "-T", "--command-timeout", "-r", "--role", "-t", "--type", "-U", "--other-user"),
 		envAssigns: true,
 	},
@@ -796,6 +797,58 @@ func (s *wrapperSpec) takesValue(opt string) bool {
 	return s.valueOpts[opt]
 }
 
+// SudoValueOpts reports whether opt is one of sudo's value-taking options —
+// the same set unwrap uses to pair option words with the values they absorb.
+// Exported for the binder's wrapper elevation, which re-walks the recorded
+// option words and must know which entries were consumed values rather than
+// free-standing flags.
+func SudoValueOpts(opt string) bool {
+	return wrapperSpecs[WrapSudo].valueOpts[opt]
+}
+
+// dynamicValueOption reports whether the literal prefix of a partially-dynamic
+// word names value-taking options of the wrapper, returning the option specs
+// to record. The prefix may carry the attached-value long form (`--user=`);
+// a short prefix is a cluster whose last element takes the expansion as its
+// value (`-lu"$U"` records `-l` and an unsatisfied `-u` + `@`) — earlier cluster
+// elements are plain flags. A known limitation: when an EARLIER cluster
+// element is itself value-taking (`-ug"$U"` — real bash attaches `g…` to
+// `-u`), the element is recorded as an unsatisfied option instead; the
+// resulting unresolved-target elevation and notes are the safe over-report
+// for either reading of the spelling (real bash attaches the whole tail to
+// the last option). A long prefix without `=` is recorded as the bare option
+// plus the `@` placeholder once its quoted tail is absorbed (`--user"$U"`
+// records `--user` + `@`); the literal misspelling `--usernobody` stays a
+// single unknown option. The unresolved target is the safe side of a spelling
+// sudo itself would reject. The caller absorbs
+// the matched word only when its dynamic tail is quoted (dynamicTailQuoted):
+// an unquoted expansion field-splits, so the word stays the dynamically-named
+// inner command.
+func (s *wrapperSpec) dynamicValueOption(prefix string) ([]string, bool) {
+	if !strings.HasPrefix(prefix, "-") || prefix == "-" || prefix == "--" {
+		return nil, false
+	}
+	if strings.HasPrefix(prefix, "--") {
+		name := prefix
+		if k := strings.IndexByte(prefix, '='); k >= 0 {
+			name = prefix[:k]
+		}
+		if !s.valueOpts[name] {
+			return nil, false
+		}
+		return []string{name}, true
+	}
+	last := "-" + prefix[len(prefix)-1:]
+	if !s.valueOpts[last] {
+		return nil, false // attached short-option value (-uroot…) needs the full word
+	}
+	specs := make([]string, 0, len(prefix))
+	for i := 1; i < len(prefix)-1; i++ {
+		specs = append(specs, "-"+prefix[i:i+1])
+	}
+	return append(specs, last), true
+}
+
 // unwrap peels recognized wrappers off the front of a simple command's words.
 // It returns the wrapper chain (outermost first), the environment assignments
 // the wrappers contributed, and the index of the first word that is part of the
@@ -822,6 +875,38 @@ func (n *normalizer) unwrap(words []*syntax.Word) ([]*Wrapper, []*Assign, int) {
 		for j < len(words) {
 			opt, ok := literalOf(words[j])
 			if !ok {
+				// A word with a dynamic part. When its literal prefix names
+				// value-taking options of the wrapper, the expansion reads as
+				// the last one's attached value (`sudo -u"$U" cmd`, `sudo
+				// --user="$U" cmd`, `sudo -lu"$U" cmd`): record the options —
+				// the value-taking one without a resolvable value (the `@`
+				// placeholder when the word is absorbed), which the refined
+				// -u doctrine resolves to an unresolved target. The word itself
+				// is absorbed — and the peel continues with the following
+				// words — only when the dynamic tail is quoted: bash
+				// field-splits the expansion of an unquoted part, so `sudo
+				// -u$U cmd` can expand into several argv fields (an option
+				// value plus free-standing words sudo reads as its own
+				// command line). Such a word ends the option run instead and
+				// stays the (dynamic) inner command the analysis degrades to
+				// ⊤; the recorded unsatisfied options keep the doctrine in
+				// charge of the elevation verdict. Any other partially
+				// dynamic word ends the option run too.
+				if specs, dyn := spec.dynamicValueOption(literalPrefixOf(words[j])); dyn {
+					w.Options = append(w.Options, specs...)
+					if dynamicTailQuoted(words[j]) {
+						// The quoted expansion is one field, absorbed as the
+						// last recorded option's value — which the analysis
+						// cannot resolve. Record the "@" placeholder the
+						// separated spelling uses, so the binder's re-pairing
+						// can never glue the following option word as this
+						// option's value (`sudo -u"$U" -l cmd` must keep -l
+						// free-standing, exactly like `sudo -u $U -l cmd`).
+						w.Options = append(w.Options, "@")
+						j++
+						continue
+					}
+				}
 				break
 			}
 			if opt == "--" || opt == "-" {
@@ -835,6 +920,11 @@ func (n *normalizer) unwrap(words []*syntax.Word) ([]*Wrapper, []*Assign, int) {
 			if spec.takesValue(opt) && j+1 < len(words) {
 				if v, ok := literalOf(words[j+1]); ok {
 					w.Options = append(w.Options, v)
+				} else {
+					// The value is dynamic: record a placeholder so the
+					// binder's re-pairing can never glue the next word as
+					// this option's value.
+					w.Options = append(w.Options, "@")
 				}
 				j += 2
 				continue
@@ -921,6 +1011,58 @@ func literalOf(w *syntax.Word) (string, bool) {
 		}
 	}
 	return b.String(), true
+}
+
+// dynamicTailQuoted reports whether every dynamic part of a word sits inside
+// double quotes, so the word still expands to a single field. Bash
+// field-splits the expansion of an unquoted part, and the split fields become
+// free-standing argv words: `sudo -u$U cmd` with U="root rm -rf /" really runs
+// `rm -rf /` as root, so such a word can never be folded into the wrapper's
+// option run. A quoted tail (`sudo -u"$U" cmd`) expands to one field and is
+// what the attached-value reading assumes.
+func dynamicTailQuoted(w *syntax.Word) bool {
+	if w == nil {
+		return false
+	}
+	for _, p := range w.Parts {
+		switch p.(type) {
+		case *syntax.Lit, *syntax.SglQuoted, *syntax.DblQuoted:
+			// Literal text and quoted runs stay one field.
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// literalPrefixOf returns the literal text a word STARTS with, stopping at the
+// first part that is not literal text — the prefix analogue of literalOf, so
+// `-u"$U"` yields `-u`: the literal option spelling that precedes the first
+// expansion.
+func literalPrefixOf(w *syntax.Word) string {
+	if w == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range w.Parts {
+		switch p := p.(type) {
+		case *syntax.Lit:
+			b.WriteString(p.Value)
+		case *syntax.SglQuoted:
+			b.WriteString(p.Value)
+		case *syntax.DblQuoted:
+			for _, ip := range p.Parts {
+				lit, ok := ip.(*syntax.Lit)
+				if !ok {
+					return b.String()
+				}
+				b.WriteString(lit.Value)
+			}
+		default:
+			return b.String()
+		}
+	}
+	return b.String()
 }
 
 // splitEq splits a literal "NAME=value" string, requiring a valid name. The

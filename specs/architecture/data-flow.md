@@ -50,11 +50,15 @@ resolution, scoring, facade and CLI stages.
    wrapper elevation: per peeled wrapper whose KB record declares
      PrivEsc (sudo) — parseArgs on its own option words, the
      refined -u doctrine → PrivEsc Direct effects (+ notes)
-   resolve(c)  →  bindCommand(res.command, res.args, c.StdinTaint)
-     │                        │
-     │                        ▼
-     │            lowerParam: KB param → engine.Effect
-     │            (target scope, taint, certainty, reversibility)
+   resolve(c)
+     ├─ payload-carrying wrapper the frontend did not peel
+     │    (declaresWrapperPayload: a path-qualified /usr/bin/sudo …)
+     │    → ⊤ CodeExec, Conservative, note
+     └─ bindCommand(res.command, res.args, c.StdinTaint)
+          │
+          ▼
+          lowerParam: KB param → engine.Effect
+          (target scope, taint, certainty, reversibility)
      ▼
  []engine.Effect   ── returned up through interp.effs
      │
@@ -79,7 +83,10 @@ Notes on the bash stage:
   after the frontend's peel and before `resolve`: a wrapper whose
   knowledge-base record declares a PrivEsc parameter (`sudo`) contributes its
   own elevation from its option words (the refined -u doctrine), ahead of the
-  wrapped command's binding. The PowerShell path peels no wrappers, so on that
+  wrapped command's binding. A privilege command the frontend did not peel (a
+  path-qualified `/usr/bin/sudo …` — its entry models the wrapped argv as the
+  `COMMAND` payload, `declaresWrapperPayload`) is beyond binding and degrades
+  to ⊤ with a note. The PowerShell path peels no wrappers, so on that
   path `sudo …` stays an unknown cmdlet and degrades to ⊤.
 
 ## PowerShell path: parse → lower

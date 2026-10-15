@@ -521,7 +521,27 @@ func TestSudoResolvesAsKBCommand(t *testing.T) {
 	check("-i", engine.KindPrivEsc, engine.ModeDirect, ValueArgs)
 	check("-s", engine.KindPrivEsc, engine.ModeDirect, ValueArgs)
 	check("-l", engine.KindPrivEsc, engine.ModeDirect, ValueArgs)
+	check("--list", engine.KindPrivEsc, engine.ModeDirect, ValueArgs)
 	check("COMMAND", engine.KindPrivEsc, engine.ModeDirect, ValueArgs)
+}
+
+// TestSudoInertSpellingsStayUndeclared pins that sudo's knowledge-base entry
+// declares none of the spellings bind.wrapperElevation resolves through
+// parseArgs' unknown list: the inert-line decision for `-h`/`-v`/`-K` and the
+// print-and-exit `-V`/`--version`/`--help` keys on them being unrecognized,
+// and `-k`'s explanatory note rides on the same list. Declaring one of them
+// as a parameter would silently disable that handling.
+func TestSudoInertSpellingsStayUndeclared(t *testing.T) {
+	k := mustLoad(t)
+	c, ok := k.Command("sudo")
+	if !ok {
+		t.Fatal("command sudo not found in the knowledge base")
+	}
+	for _, spec := range []string{"-h", "--host", "-v", "-K", "-V", "--version", "--help", "-k", "-U", "--other-user"} {
+		if c.HasParam(spec) {
+			t.Errorf("sudo declares %q: the inert-line decision (and -k's explanatory note) in bind.wrapperElevation keys on this spelling staying unrecognized", spec)
+		}
+	}
 }
 
 // TestCommandParamIndexMatchesScan locks the invariant behind Command.Param's

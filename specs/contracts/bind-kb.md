@@ -41,7 +41,11 @@ The KB is compiled into the binary: `kb/loader.go` embeds `data/*.yaml` via `//g
         ▼
   wrapper elevation: per wrapper w, k.Command(w.Name) ──▶ declaresPrivEsc (sudo)?
         │    yes: parseArgs against the wrapper's own record — the refined -u doctrine
-        │    → PrivEsc Direct effects (+ notes); no: the call passes through unchanged
+        │    → PrivEsc Direct effects (+ notes); an inert sudo line (-l, -v/-K, -h,
+        │    -V/--version/--help, flag-only) reports no elevation (the line degrades
+        │    to ⊤); a payload-carrying sudo the frontend did not peel
+        │    (declaresWrapperPayload) degrades to ⊤ CodeExec (Conservative); no: the
+        │    call passes through unchanged — refinements: specs/domains/binding.md
         ▼
   Binder.resolve ── k.Command(name) ──▶ *kb.Command ── Dialect==DialectBuiltin? ─┐
         │                                                                        │
@@ -66,7 +70,7 @@ Only plain values cross the boundary: `bind` never calls into `kb` mutably, and 
 
 ## Error Propagation
 
-KB problems are start-up errors, not per-call errors. `Load`/`Default` return a Go `error` when a document declares a missing or unknown `version` (`Known` rejects anything but `effect-kb/v2`), when YAML is malformed, or when `KB.Validate` finds a destructive entry that names an undeclared parameter or unknown command; the composition layer surfaces that as a start-up error. Once a KB is loaded, binding is total and error-free per call: an unrecognized flag is recorded in `Result.Notes` ("unrecognized flag(s): …"), not returned as an error; a name that matches no builtin/function/alias/command sets `ResolveUnknown` and yields the ⊤ effect with `Conservative=true`. `Bind` never returns nil and never panics on a well-formed `Call`.
+KB problems are start-up errors, not per-call errors. `Load`/`Default` return a Go `error` when a document declares a missing or unknown `version` (`Known` rejects anything but `effect-kb/v2`), when YAML is malformed, or when `KB.Validate` finds a destructive entry that names an undeclared parameter or unknown command; the composition layer surfaces that as a start-up error. Once a KB is loaded, binding is total and error-free per call: an unrecognized flag is recorded in `Result.Notes` ("unrecognized flag(s): …"; the wrapper-elevation surface phrases the same information as "flags not modelled by the knowledge base: …"), not returned as an error; a name that matches no builtin/function/alias/command sets `ResolveUnknown` and yields the ⊤ effect with `Conservative=true`. `Bind` never returns nil and never panics on a well-formed `Call`.
 
 ## Breaking Change Checklist
 

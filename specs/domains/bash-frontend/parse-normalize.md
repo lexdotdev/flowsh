@@ -63,7 +63,7 @@ A `Word` records `Value`/`Literal` when the whole word is fully literal, plus it
 
 | Wrapper   | value-taking options (`valueOpts`)                         | lifts `envAssigns` | fixed positional args | default command |
 | --------- | ---------------------------------------------------------- | ------------------ | --------------------- | --------------- |
-| `sudo`    | `-u/--user -g/--group -h/--host -p/--prompt -C/--close-from -T/--command-timeout -r/--role -t/--type -U/--other-user` | yes                | 0                     | —               |
+| `sudo`    | `-u/--user -g/--group -h/--host -D/--chdir -R/--chroot -p/--prompt -C/--close-from -T/--command-timeout -r/--role -t/--type -U/--other-user` | yes                | 0                     | —               |
 | `env`     | `-u/--unset -C/--chdir -S/--split-string`                  | yes                | 0                     | —               |
 | `nohup`   | —                                                          | no                 | 0                     | —               |
 | `command` | —                                                          | no                 | 0                     | —               |
@@ -72,7 +72,7 @@ A `Word` records `Value`/`Literal` when the whole word is fully literal, plus it
 | `xargs`   | `-n -I -i -d -P -s -E -L -a` and long forms                | no                 | 0                     | `echo`          |
 | `setsid`  | —                                                          | no                 | 0                     | —               |
 
-`--`/`-` terminate a wrapper's options. A value attached to an option (`--user=root`, `-uroot`) is not treated as a separate value. `takesValue` encodes these rules. When nothing remains after a wrapper chain, the wrapper's `defaultCmd` (e.g. `xargs` → `echo`) becomes the effective command.
+`--`/`-` terminate a wrapper's options. A value attached to an option (`--user=root`, `-uroot`) is not treated as a separate value. A partially dynamic word whose literal prefix names a value-taking option records that option unsatisfied and is absorbed only when its dynamic tail is quoted (one field); an unquoted expansion field-splits, so the word ends the option run and stays the dynamically-named inner command. `takesValue` encodes these rules. When nothing remains after a wrapper chain, the wrapper's `defaultCmd` (e.g. `xargs` → `echo`) becomes the effective command.
 
 ### Environment assignments and symbol annotation
 

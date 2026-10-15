@@ -293,6 +293,9 @@ commands:
       - spec: "-l"
         kind: flag
         effect: {kind: PrivEsc, mode: Direct, valueFrom: args}
+      - spec: "--list"
+        kind: flag
+        effect: {kind: PrivEsc, mode: Direct, valueFrom: args}
       - spec: COMMAND
         kind: positional
         effect: {kind: PrivEsc, mode: Direct, valueFrom: args}
