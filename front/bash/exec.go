@@ -664,27 +664,26 @@ func execOptionChannel(name, val string, known bool) bool {
 	return false
 }
 
-// isExecEnvName reports whether an assignment to name reaches the
+// ExecEnvVar reports whether an assignment to name reaches the
 // code-execution channel: a program-valued variable, an option channel, or
-// git's environment configuration family.
-func isExecEnvName(name string) bool {
+// git's environment configuration family. It is the single source of truth
+// shared by the shell's own assignment channels (a prefix assignment, an `env`
+// operand, an `export`) and the binder's copy of them, through ExecEnvEffect.
+func ExecEnvVar(name string) bool {
 	return execEnvVars[name] || optionChannelEnvVars[name] ||
 		strings.HasPrefix(name, gitConfigEnvPrefix)
 }
 
-// ExecEnvVar reports whether an assignment to name makes the runtime execute
-// the assigned value. It is the single source of truth shared by the shell's
-// own assignment channels (a prefix assignment, an `env` operand, an `export`)
-// and the binder's copy of them.
-func ExecEnvVar(name string) bool { return execEnvVars[name] }
-
-// envExecEffect builds the code-execution effect an assignment to an
+// ExecEnvEffect builds the code-execution effect an assignment to an
 // exec-bearing variable implies. The assigned program is named when the value
 // is a statically known path; an option string (`-agentlib:…`) or a dynamic
 // value leaves the subject unresolved (⊤). Clearing the variable (`VAR=`) runs
-// nothing.
-func envExecEffect(name, val string, known bool, taint engine.Taint) (engine.Effect, bool) {
-	if !isExecEnvName(name) {
+// nothing. It is the exported entry point of the channel ExecEnvVar denotes, so
+// a caller that holds a normalized assignment — the binder's copy of the shell's
+// assignment channels — lowers it with the same rules instead of re-deriving
+// them.
+func ExecEnvEffect(name, val string, known bool, taint engine.Taint) (engine.Effect, bool) {
+	if !ExecEnvVar(name) {
 		return engine.Effect{}, false
 	}
 	if known && val == "" {
@@ -1600,7 +1599,7 @@ func (it *interp) execDecl(c *syntax.DeclClause) {
 		// Finding 45: an `export`/`declare` of a variable whose value the
 		// runtime executes (JAVA_TOOL_OPTIONS, LD_PRELOAD, SSH_ASKPASS, …) is a
 		// code-execution sink, exactly like the prefix-assignment spelling.
-		if ee, ok := envExecEffect(name, val, known, taint); ok {
+		if ee, ok := ExecEnvEffect(name, val, known, taint); ok {
 			it.effs = append(it.effs, ee)
 			it.derive(ee, engine.Atom{Kind: engine.AtomLiteral, Text: name, Loc: sourceLoc(fromMvdanPos(a.Pos()), it.prog.File)})
 		}
@@ -1764,7 +1763,7 @@ func (it *interp) execCall(c *syntax.CallExpr) {
 		ew := envWriteEffect(name, taint)
 		it.effs = append(it.effs, ew)
 		it.derive(ew, engine.Atom{Kind: engine.AtomLiteral, Text: name, Loc: sourceLoc(as.Pos, it.prog.File)})
-		if ee, ok := envExecEffect(name, val, known, taint); ok {
+		if ee, ok := ExecEnvEffect(name, val, known, taint); ok {
 			it.effs = append(it.effs, ee)
 			it.derive(ee, engine.Atom{Kind: engine.AtomLiteral, Text: name, Loc: sourceLoc(as.Pos, it.prog.File)})
 		}
@@ -1811,7 +1810,7 @@ func (it *interp) execCall(c *syntax.CallExpr) {
 		it.effs = append(it.effs, ew)
 		it.derive(ew, engine.Atom{Kind: engine.AtomLiteral, Text: we.Name, Loc: sourceLoc(we.Pos, it.prog.File)})
 		if we.Value != nil {
-			if ee, ok := envExecEffect(we.Name, we.Value.Value, we.Value.Literal, engine.TaintBottom()); ok {
+			if ee, ok := ExecEnvEffect(we.Name, we.Value.Value, we.Value.Literal, engine.TaintBottom()); ok {
 				it.effs = append(it.effs, ee)
 				it.derive(ee, engine.Atom{Kind: engine.AtomLiteral, Text: we.Name, Loc: sourceLoc(we.Pos, it.prog.File)})
 			}
@@ -2573,7 +2572,7 @@ func (it *interp) expandAliasBody(body string, cmd *Command) (string, []string, 
 		ew := envWriteEffect(a.Name, taint)
 		it.effs = append(it.effs, ew)
 		it.derive(ew, engine.Atom{Kind: engine.AtomLiteral, Text: a.Name, Loc: sourceLoc(pos, it.prog.File)})
-		if ee, ok := envExecEffect(a.Name, val, known, taint); ok {
+		if ee, ok := ExecEnvEffect(a.Name, val, known, taint); ok {
 			it.effs = append(it.effs, ee)
 			it.derive(ee, engine.Atom{Kind: engine.AtomLiteral, Text: a.Name, Loc: sourceLoc(pos, it.prog.File)})
 		}

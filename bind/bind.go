@@ -233,12 +233,11 @@ func (b *Binder) Bind(c *Call) *Result {
 		r.Conservative = true
 		r.Notes = append(r.Notes, "no knowledge base bound")
 		// Without a knowledge base nothing can be inert: report the
-		// environment writes as before the wrapper pass existed.
-		for _, a := range c.Env {
-			ew := envWrite(a)
-			raw = append(raw, ew)
-			ders = append(ders, derive(ew, []engine.Atom{envVarAtom(a.Name, withFile(a.Pos, c.Pos.File))}, "env.write"))
-		}
+		// environment writes and the code-execution channel they can carry as
+		// before the wrapper pass existed.
+		effs, envDers := envAssignEffects(c)
+		raw = append(raw, effs...)
+		ders = append(ders, envDers...)
 		r.Effects = raw
 		r.Derivations = ders
 		normalizeResult(r)
@@ -295,16 +294,16 @@ func (b *Binder) Bind(c *Call) *Result {
 			ders = append(ders, derive(f.e, f.atoms, ruleForKind(engine.KindPrivEsc)))
 		}
 		// Environment assignments (VAR=x cmd, env VAR=x cmd) mutate the
-		// environment. An inert wrapper line runs nothing, so the binder's
-		// copy of the writes is suppressed with the rest of the line (the
-		// wrapper-donated writes the bash interpreter recorded at peel time
-		// are not retracted — an accepted precision residual, SECURITY.md
-		// Known Risks).
-		for _, a := range c.Env {
-			ew := envWrite(a)
-			raw = append(raw, ew)
-			ders = append(ders, derive(ew, []engine.Atom{envVarAtom(a.Name, withFile(a.Pos, c.Pos.File))}, "env.write"))
-		}
+		// environment, and an assignment to a variable the runtime executes
+		// (LD_PRELOAD, JAVA_TOOL_OPTIONS, TAR_OPTIONS, git's GIT_CONFIG_*)
+		// executes a program as well. An inert wrapper line runs nothing, so
+		// the binder's copy of them is suppressed with the rest of the line
+		// (the wrapper-donated writes the bash interpreter recorded at peel
+		// time are not retracted — an accepted precision residual,
+		// SECURITY.md Known Risks).
+		effs, envDers := envAssignEffects(c)
+		raw = append(raw, effs...)
+		ders = append(ders, envDers...)
 	}
 
 	if !c.NamePresent {
@@ -2393,6 +2392,31 @@ func certaintyOf(m engine.EffectMode) engine.Certainty {
 	}
 }
 
+// envAssignEffects lowers the environment assignments a call carries: the write
+// each one performs, plus the code-execution effect an exec-bearing one implies.
+// The exec channel is not a rule the binder owns — a variable whose value the
+// runtime executes (LD_PRELOAD, JAVA_TOOL_OPTIONS), an option channel
+// (TAR_OPTIONS) and git's environment configuration family (GIT_CONFIG_*) are
+// front/bash's ExecEnvVar, and lowering them here through bash.ExecEnvEffect is
+// what keeps the binder's copy of the shell's assignment channels from drifting
+// from the interpreter's: a policy that denies code execution must see a prefix
+// assignment or an `env` operand handed to Bind directly, not only the same line
+// through the interpreter.
+func envAssignEffects(c *Call) ([]engine.Effect, []engine.Derivation) {
+	var effs []engine.Effect
+	var ders []engine.Derivation
+	for _, a := range c.Env {
+		ew := envWrite(a)
+		effs = append(effs, ew)
+		ders = append(ders, derive(ew, []engine.Atom{envVarAtom(a.Name, withFile(a.Pos, c.Pos.File))}, "env.write"))
+		if ee, ok := bash.ExecEnvEffect(a.Name, a.Value.Value, a.Value.Literal, a.Value.Taint); ok {
+			effs = append(effs, ee)
+			ders = append(ders, derive(ee, []engine.Atom{envVarAtom(a.Name, withFile(a.Pos, c.Pos.File))}, "code.exec"))
+		}
+	}
+	return effs, ders
+}
+
 // envWrite is the effect of an environment assignment.
 func envWrite(a EnvAssign) engine.Effect {
 	return engine.Effect{
@@ -2539,6 +2563,12 @@ func FromBash(cmd *bash.Command, prog *bash.Program) *Call {
 		}
 		ea := EnvAssign{Name: a.Name, Via: a.Via,
 			Pos: engine.SourceLoc{Line: a.Pos.Line, Col: a.Pos.Col}}
+		// A normalized assignment carries no Value when it assigns nothing:
+		// `VAR=` binds the empty string and `declare VAR` leaves the variable
+		// unset. Both execute nothing, so the value is known-empty rather than
+		// unknown — the distinction the exec channel keys on (a cleared
+		// LD_PRELOAD must not read as an unresolvable one).
+		ea.Value.Literal = true
 		if a.Value != nil {
 			ea.Value = Arg{Value: a.Value.Value, Literal: a.Value.Literal, Taint: a.Value.Taint,
 				Pos: engine.SourceLoc{Line: a.Value.Pos.Line, Col: a.Value.Pos.Col}}

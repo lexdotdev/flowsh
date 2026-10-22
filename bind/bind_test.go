@@ -290,6 +290,63 @@ func TestBindEnvWrapperPrefix(t *testing.T) {
 	hasEffectOn(t, res, engine.KindFSWrite, engine.ModeDirect, "/x")
 }
 
+// TestBindEnvExecChannel pins the binder's copy of the shell's assignment
+// channels. Bind/BindBash are the public API and can be handed a normalized
+// Call with no interpreter in front of them, so an assignment to a variable the
+// runtime executes (LD_PRELOAD, JAVA_TOOL_OPTIONS), an option channel
+// (TAR_OPTIONS) and git's environment configuration family (GIT_CONFIG_*) must
+// lower here to the same CodeExec front/bash emits for the same line: a policy
+// that denies code execution may not pass on either path.
+func TestBindEnvExecChannel(t *testing.T) {
+	b := newBinder(t)
+	tests := []struct {
+		name       string
+		src        string
+		wantExec   bool
+		wantTop    bool
+		wantTarget string
+	}{
+		{name: "prefix assignment names the program", src: `LD_PRELOAD=/tmp/e.so ls`,
+			wantExec: true, wantTarget: "/tmp/e.so"},
+		{name: "env operand names the program", src: `env JAVA_TOOL_OPTIONS=/tmp/e.jar ls`,
+			wantExec: true, wantTarget: "/tmp/e.jar"},
+		{name: "dynamic value leaves the subject unresolved", src: `LD_PRELOAD=$X ls`,
+			wantExec: true, wantTop: true},
+		{name: "option channel is a top execution", src: `TAR_OPTIONS=--to-command=/tmp/e tar -xf a.tar`,
+			wantExec: true, wantTop: true},
+		{name: "git environment configuration is a top execution", src: `GIT_CONFIG_COUNT=1 git status`,
+			wantExec: true, wantTop: true},
+		{name: "an option channel without an exec option runs nothing", src: `TAR_OPTIONS=-v tar -xf a.tar`},
+		{name: "clearing the variable runs nothing", src: `LD_PRELOAD= ls`},
+		{name: "a benign variable is only a write", src: `FOO=bar ls`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := bindOne(t, b, tt.src)
+			got, ok := findEffect(res, engine.KindCodeExec, engine.ModeDirect)
+			if ok != tt.wantExec {
+				t.Fatalf("CodeExec present = %v, want %v (%s)", ok, tt.wantExec, effectsString(res))
+			}
+			// The write itself is never lost, whatever the exec channel says.
+			if !hasDerivationFor(res, engine.KindEnvWrite, engine.ModeDirect) {
+				t.Fatalf("no env.write derivation (%s)", effectsString(res))
+			}
+			if !ok {
+				return
+			}
+			if got.Target.IsTop() != tt.wantTop {
+				t.Fatalf("CodeExec target top = %v, want %v (target %s)", got.Target.IsTop(), tt.wantTop, got.Target)
+			}
+			if tt.wantTarget != "" && !got.Target.Contains(tt.wantTarget) {
+				t.Fatalf("CodeExec target = %s, want it to contain %q", got.Target, tt.wantTarget)
+			}
+			if !hasDerivationFor(res, engine.KindCodeExec, engine.ModeDirect) {
+				t.Fatalf("no code.exec derivation justifying the sink (%s)", effectsString(res))
+			}
+		})
+	}
+}
+
 func TestBindWrapperChainWithEnv(t *testing.T) {
 	b := newBinder(t)
 	prog := parse(t, "nohup timeout 30 nice -n 5 sudo env A=1 command xargs -0 rm -rf /x")
