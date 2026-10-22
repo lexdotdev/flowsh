@@ -186,8 +186,10 @@ func TestExportedAnalyzeWithOptions(t *testing.T) {
 		t.Errorf("AnalyzeWith(Options{}) differs from Analyze:\n got=%s\nwant=%s", zb, pb)
 	}
 
-	// The Windows option toggles the host-independent Registry provider: forced
-	// on it persists state, forced off it contributes nothing.
+	// The Windows option selects the Registry provider's host reading; the
+	// *effect* of a registry write is host-agnostic (security-review F22: a
+	// control plane dispatching to Windows endpoints must not be told "no
+	// effect"), so both settings report the persistence.
 	const reg = `Set-ItemProperty -Path HKCU:\Software\x -Name y -Value z`
 	on, err := api.AnalyzeWith(api.LangPowerShell, reg, api.Options{Windows: api.Bool(true)})
 	if err != nil {
@@ -200,8 +202,8 @@ func TestExportedAnalyzeWithOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AnalyzeWith(Windows=false): %v", err)
 	}
-	if len(off.Effects) != 0 {
-		t.Errorf("AnalyzeWith(Windows=false): want 0 effects, got %d", len(off.Effects))
+	if len(off.Effects) == 0 {
+		t.Errorf("AnalyzeWith(Windows=false): a registry write is persistence on every host, got no effect")
 	}
 }
 

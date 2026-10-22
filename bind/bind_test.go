@@ -554,8 +554,9 @@ func TestBindPhantomEgressNotCreated(t *testing.T) {
 		"git show main:backend/config/defaults.go",
 		"git show pr-36:build/appicon.png",
 		"git log --oneline --all -- code-review.md",
-		"git fetch origin",
-		"git push --force origin main",
+		// Finding 14: `git fetch origin` / `git push origin main` are NOT
+		// phantom — the row declares fetch/push as network operations and the
+		// operand names a remote. They are pinned in TestBindRealEgressKept.
 		"go get ./...",
 	} {
 		res := bindOne(t, b, src)
@@ -586,6 +587,11 @@ func TestBindRealEgressKept(t *testing.T) {
 		{"ssh -4 host", "host"},  // openssh destination slot
 		{"ping -6 host", "host"}, // net-tools destination slot
 		{"pip download --index-url https://pypi.example/simple pkg", "https://pypi.example/simple"},
+		// Finding 14: a network subcommand's named remote survives the gate.
+		{"git fetch origin", "origin"},
+		{"git push --force origin main", "origin"},
+		{"pip download requests", "requests"},
+		{"npm publish pkg", "pkg"},
 	}
 	for _, tc := range cases {
 		res := bindOne(t, b, tc.src)

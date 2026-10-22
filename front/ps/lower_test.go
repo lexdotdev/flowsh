@@ -411,16 +411,20 @@ func TestEnvDriveReadAndWrite(t *testing.T) {
 	}
 }
 
-func TestRegistryOnlyOnWindows(t *testing.T) {
+func TestRegistryIsHostAgnosticPersistence(t *testing.T) {
 	const src = `Set-ItemProperty -Path HKCU:\x -Name y -Value z`
 	p := parseOK(t, src)
 
+	// F22: persistence is a property of the command, not of the analysing host.
+	// A Linux/macOS control plane dispatching to Windows endpoints must still be
+	// told the write persists — never an empty, "clean" report.
 	nonWin := LowerWith(p, Options{Windows: false})
-	if len(nonWin.Effects) != 0 {
-		t.Fatalf("registry must contribute no effect off Windows; got %+v", nonWin.Effects)
+	onlyKinds(t, nonWin, engine.KindPersist)
+	if !targetHas(nonWin, engine.KindPersist, "HKCU:\\x") {
+		t.Fatalf("expected Persist on the registry path off Windows; %+v", nonWin.Effects)
 	}
-	if !notesContain(nonWin, "Windows-only") {
-		t.Fatalf("expected a Windows-only note; notes=%v", nonWin.Notes)
+	if !notesContain(nonWin, "host-agnostic") {
+		t.Fatalf("expected a host-agnostic note; notes=%v", nonWin.Notes)
 	}
 
 	win := LowerWith(p, Options{Windows: true})
