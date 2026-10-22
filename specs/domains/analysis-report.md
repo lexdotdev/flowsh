@@ -218,7 +218,7 @@ Analyze(lang, src)                       analyze.go (package func)
 
 ## Invariants
 
-- `Analyze` is total and deterministic: the frontends degrade to ⊤ rather than fail, so the returned `*Report` is never nil.
+- `Analyze` is total and deterministic: the frontends degrade to ⊤ rather than fail, so the returned `*Report` is never nil. The single qualification is sound in direction and host-dependent: a PowerShell parse runs under a wall-clock budget (ADR-0006), so a starved host can turn a benign source into ⊤ — the same input then reports ⊤ (covered, conservative) instead of the concrete effects, never a *different* concrete effect set ([ADR-0018](../decisions/0018-determinism-gate-parse-budget-trip.md)).
 - `Report.Effects` is never `null`: `normalizeEffects` replaces a nil slice with `[]engine.Effect{}`, so JSON always carries `[]`.
 - `Report.Covered()` is true iff the analysis produced at least one effect, degraded to ⊤ (`Top`), or is `Conservative` — the "no silent miss" property the GuardFall corpus checks.
 - `Report.SchemaVersion`, `Report.Tool` and `Report.ToolVersion` always equal `engine.SchemaVersion` (`effect-ir/v2`), `"flowsh"`, `"flowsh/v3"` respectively.
@@ -267,6 +267,8 @@ The embedding contract is versioned by the two report constants, not by the modu
 
 The corpus harness is deliberately **not** re-exported: `Case`, `LoadCorpus`, `CorpusDir`, `CorpusDirFrom`, `Filter`, the `Group*` constants and `GuardFallClasses` live in the test-only `internal/corpus` package — testing aids, not part of the embedding surface (in-module tests, including the external `engine_test` benchmark, reach them there).
 
+The determinism claim is gated by the external test file `api/api_test.go`: `TestAnalyzeConcurrentMatchesSequential` runs 32 goroutines × 4 rounds × the probe set against the shared process-wide analyser and requires every result to be byte-identical to the sequential reference (it also races the one-time knowledge-base load, being the first caller in the test binary). Exactly one outcome is excepted — a ⊤ the PowerShell parse budget forced on a loaded host — which is tolerated only when a sequential re-analysis reproduces the reference for that input; a concrete difference, a failure, or a ⊤ for any other reason fails the gate ([ADR-0018](../decisions/0018-determinism-gate-parse-budget-trip.md)). `TestRetrySequentiallyClassification` pins that classifier in the fail-closed direction.
+
 ## Extension Points
 
 - **Add a dialect**: add a `Lang` constant (and to `Langs`), extend `ParseLang`'s switch with its canonical name + aliases, add a `case` in `(*Analyzer).AnalyzeWith`, and implement `<lang>Analyze` producing a normalized report.
@@ -281,5 +283,6 @@ The corpus harness is deliberately **not** re-exported: `Case`, `LoadCorpus`, `C
 - [Report Contract](../contracts/report-json.md) — the emitted JSON document boundary.
 - [Layer Architecture](../architecture/layers.md) — the layer table and import graph, including the `api/` public-API layer.
 - [ADR-0010: Public embedding API](../decisions/0010-public-embedding-api.md) — why the embedding surface exists and how it is versioned.
+- [ADR-0018: The determinism gate tolerates a parse-budget ⊤](../decisions/0018-determinism-gate-parse-budget-trip.md) — what the concurrency gate may claim on a loaded host.
 - [Spec System](../META.md) — document formats and update rules.
 - [Index](../INDEX.md) — task-to-spec navigation.

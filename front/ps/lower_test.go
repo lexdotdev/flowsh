@@ -329,6 +329,21 @@ func TestParseTimeoutYieldsTop(t *testing.T) {
 			t.Fatalf("%q: timed-out program must be conservative", trim(src))
 		}
 	}
+
+	// The budget wording is a contract: the embedding determinism gate tells a
+	// host-load trip from a real nondeterminism by this fragment
+	// (`parseBudgetReasonFragment` in `api/api_test.go`, ADR-0018), so a
+	// rewording has to be a deliberate, test-visible change. Pin it on a source
+	// that stays inside the structural bounds, where only the budget can stop
+	// the parse.
+	if coarseMonotonicClock {
+		t.Logf("budget wording: skipped — a sub-tick parse cannot observe a %d µs budget on this host", budgetMicros)
+	} else {
+		p := ParseTimeout("t", `Get-Content x`, budgetMicros)
+		if !p.Top || !strings.Contains(p.Reason, "µs budget") {
+			t.Fatalf("timeout reason must name the budget, got ⊤=%v reason %q", p.Top, p.Reason)
+		}
+	}
 }
 
 // TestParseGenerousTimeoutParses: a normal budget must not trip.
