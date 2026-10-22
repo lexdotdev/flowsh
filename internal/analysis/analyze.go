@@ -559,7 +559,7 @@ func analyzeJS(src, root string) *Report {
 	rep.Effects = normalizeEffects(res.Effects)
 	rep.Score = engine.ScoreEffects(rep.Effects)
 	rep.Destructiveness = rep.Score.Destructiveness
-	rep.Why = buildWhy(rep.Effects, nil, engine.Atom{Kind: engine.AtomLiteral, Text: res.Reason})
+	rep.Why = buildWhy(rep.Effects, nil, engine.Atom{Kind: engine.AtomLiteral, Text: "js-opaque"})
 	rep.Top = res.Top
 	rep.Conservative = res.Conservative
 	rep.Reason = res.Reason

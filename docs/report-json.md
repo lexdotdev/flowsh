@@ -282,6 +282,8 @@ Each step:
 | `note` | string | note non-empty | A human hint about the atom. |
 | `loc` | object | position known | `{ "file": string, "line": int, "col": int }` — the 1-based source position. |
 
+The opaque JavaScript stub uses `literal:js-opaque` as a fallback marker without a source location. It identifies unsupported analysis rather than an observed JavaScript token; the explanation is in `reason`.
+
 ## Reading the result
 
 - `effects` is always an array, never `null`; it may be empty (`[]`). A non-empty

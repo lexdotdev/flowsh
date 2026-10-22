@@ -7,6 +7,7 @@
 ## Key Files
 
 - `front/js/analyze.go` — `Result` and the unconditional `Analyze` stub.
+- `front/js/analyze_test.go` — opaque-input contract and independent results.
 - `internal/analysis/analyze.go` — `LangJavaScript`, alias parsing, `analyzeJS`, and report assembly.
 - `api/api.go` — public language constant and forwarding analysis surface.
 - `api/api_test.go` — shared dialect and report-contract checks.
@@ -40,7 +41,7 @@ func Analyze(src string) *Result
     -> buildCanonical -> Report{lang:"js", input, root, ...}
 ```
 
-The shared engine determines the Critical grade. The facade supplies the normal report identity, input/root, explanation, and canonical form. `commands` stays zero, `resolution` stays its zero value, and `commandCalls` and `destructive` are omitted because the stub discovers no calls or destructive-table matches. The explanation cites the fixed degradation reason and has no invented source location. Report fields and version tags retain their existing shapes/values.
+The shared engine determines the Critical grade. The facade supplies the normal report identity, input/root, explanation, and canonical form. `commands` stays zero, `resolution` stays its zero value, and `commandCalls` and `destructive` are omitted because the stub discovers no calls or destructive-table matches. The explanation uses the fixed `literal:js-opaque` fallback marker with no source location. It identifies opaque analysis without claiming a source token was parsed; the explanatory sentence stays in `reason`. Report fields and version tags retain their existing shapes/values.
 
 ## Invariants
 
