@@ -111,7 +111,7 @@ Present on every report:
 | `schemaVersion` | string | Frozen effect-schema tag (`effect-ir/v2`). |
 | `tool` | string | `flowsh`. |
 | `toolVersion` | string | CLI report-contract tag (`flowsh/v3`). |
-| `lang` | string | Dialect actually analysed: `bash`, `posix`, or `posh`. |
+| `lang` | string | Selected dialect: `bash`, `posix`, `posh`, or `js` (currently an opaque top-only stub). |
 | `input` | string | The command source text that was analysed. |
 
 | Key | Type | Present when | Meaning |

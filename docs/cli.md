@@ -1,6 +1,7 @@
 # CLI user-guide
 
-`flowsh` is a static effect analyser: you give it a shell or PowerShell command,
+`flowsh` is a static effect analyser: you give it a shell, PowerShell, or
+JavaScript program,
 and it reports the observable effects that command implies *without running it*,
 plus a risk score and any credential-exfiltration flows it can prove. This guide
 covers the command-line interface. For an introduction to the tool, see the
@@ -21,10 +22,10 @@ has no runtime dependencies. Requires Go 1.27 or newer (see
 ## Synopsis
 
 ```
-flowsh [--lang bash|posix|posh|auto] [--json] [--windows] '<command>'
-echo '<command>' | flowsh [--lang bash|posix|posh|auto] [--json] [--windows]
-flowsh --file <path> [--lang bash|posix|posh|auto] [--json]
-flowsh --batch [--lang bash|posix|posh|auto] [--file <path>] [--windows]
+flowsh [--lang bash|posix|posh|js|auto] [--json] [--windows] '<command>'
+echo '<command>' | flowsh [--lang bash|posix|posh|js|auto] [--json] [--windows]
+flowsh --file <path> [--lang bash|posix|posh|js|auto] [--json]
+flowsh --batch [--lang bash|posix|posh|js|auto] [--file <path>] [--windows]
 ```
 
 Flags are **position-independent**: `flowsh --lang posh 'x'` and
@@ -76,7 +77,12 @@ stdin and never require a command. When both are given, `--help` wins.
 | `bash` *(default)* | `front/bash` | GNU bash argv (with `-flags` and `--options`). Alias: `shell`. |
 | `posix` | `front/bash` (POSIX variant) | The POSIX shell. Bash-only special forms (e.g. `[[ … ]]`) are not recognised. Alias: `sh`. |
 | `posh` | `front/ps` | PowerShell cmdlet syntax. Aliases: `ps`, `pwsh`, `powershell`. |
+| `js` | `front/js` | JavaScript/Node.js foundation stub: every input reports ⊤ without parsing or evaluation. Aliases: `javascript`, `node`, `nodejs`. |
 | `auto` | sniffed | Pick `posh` when the input shows PowerShell cmdlet/parameter/syntax markers, else `bash`. Never fails; falls back to `bash`. |
+
+Language names and aliases are trimmed and case-insensitive. JavaScript
+requires an explicit language selection; `auto` does not detect JS. Its
+`Covered()` result means conservative coverage, not JavaScript understanding.
 
 ## Exit status
 
@@ -215,6 +221,17 @@ $ flowsh --lang auto 'Get-Content ~/.aws/credentials'
 `--lang auto` sniffs the input: PowerShell cmdlets/aliases/parameters select
 `posh`, otherwise `bash` is used (including POSIX input). It never fails: a
 command with no distinctive markers is treated as bash.
+
+### JavaScript foundation
+
+```sh
+$ flowsh --lang js --json 'const x = 1;'
+```
+
+The report has `lang: "js"`, one `CodeExec(⊤)` effect, and `top` and
+`conservative` true with a reason explaining the unimplemented parser/evaluator.
+The usual score, why-trace, and canonical form are present. This is a
+registration milestone; all JS inputs remain deny-or-inspect.
 
 ### PowerShell
 

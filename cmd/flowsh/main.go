@@ -1,16 +1,18 @@
 // Command flowsh is the public entry point of the effect analyser: it takes a
-// shell or PowerShell command (as an argument or on stdin) and prints the set of
-// effects it implies, as a human summary or a JSON report.
+// shell, PowerShell, or JavaScript program (as an argument, on stdin, or from a
+// file) and prints the set of effects it implies, as a human summary or a JSON
+// report.
 //
-//	flowsh [--lang bash|posix|posh|auto] [--json] [--windows] '<command>'
-//	echo '<command>' | flowsh [--lang bash|posix|posh|auto] [--json]
-//	flowsh --file <path> [--lang bash|posix|posh|auto] [--json]
-//	flowsh --batch [--lang bash|posix|posh|auto] [--file <path>]
+//	flowsh [--lang bash|posix|posh|js|auto] [--json] [--windows] '<command>'
+//	echo '<command>' | flowsh [--lang bash|posix|posh|js|auto] [--json] [--windows]
+//	flowsh --file <path> [--lang bash|posix|posh|js|auto] [--json]
+//	flowsh --batch [--lang bash|posix|posh|js|auto] [--file <path>] [--windows]
 //
-// The command is analysed by the same pipeline the library exposes: front/bash
-// or front/ps parse and lower it, bind resolves it against the embedded
-// knowledge base, and engine folds the result into the frozen effect IR. Where
-// the analysis cannot bound the input it degrades to ⊤ rather than guessing.
+// The command is analysed by the same pipeline the library exposes: front/bash,
+// front/ps, or front/js handle the dialect, bind resolves commands against the
+// embedded knowledge base, and engine folds the result into the frozen effect
+// IR. Where the analysis cannot bound the input it degrades to ⊤ rather than
+// guessing.
 package main
 
 import (
@@ -26,18 +28,20 @@ import (
 	"github.com/v0lka/flowsh/engine"
 )
 
-const usage = `flowsh — effect report for a shell or PowerShell command
+const usage = `flowsh — effect report for shell, PowerShell, or JavaScript source
 
 usage:
-  flowsh [--lang bash|posix|posh|auto] [--json] [--windows] '<command>'
-  echo '<command>' | flowsh [--lang bash|posix|posh|auto] [--json] [--windows]
-  flowsh --file <path> [--lang bash|posix|posh|auto] [--json]
-  flowsh --batch [--lang bash|posix|posh|auto] [--file <path>] [--windows]
+  flowsh [--lang bash|posix|posh|js|auto] [--json] [--windows] '<command>'
+  echo '<command>' | flowsh [--lang bash|posix|posh|js|auto] [--json] [--windows]
+  flowsh --file <path> [--lang bash|posix|posh|js|auto] [--json]
+  flowsh --batch [--lang bash|posix|posh|js|auto] [--file <path>] [--windows]
 
 options:
-  --lang bash|posix|posh|auto
+  --lang bash|posix|posh|js|auto
                      dialect of the input (default: bash); "auto" sniffs the
-                     input for PowerShell cmdlets/aliases and picks the dialect
+                     input for PowerShell cmdlets/aliases and picks bash or posh;
+                     js (aliases: javascript, node, nodejs) currently reports
+                     every input as ⊤, without parsing or evaluation
   --file PATH        read the command from PATH ("-" for stdin); the report's
                      root names the file
   --batch            read many commands (one per line) and write one JSON report

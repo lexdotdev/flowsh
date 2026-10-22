@@ -69,7 +69,7 @@ type Case struct {
 	// Category is the GuardFall class ("A".."E") for GroupGuardFall cases, and
 	// empty otherwise.
 	Category string `json:"category,omitempty"`
-	// Lang is the dialect the input is written in ("bash", "posix" or "posh").
+	// Lang names the input dialect: bash, posix, posh, or js.
 	Lang string `json:"lang"`
 	// Input is the command source text.
 	Input string `json:"input"`

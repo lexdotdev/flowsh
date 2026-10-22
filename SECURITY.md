@@ -17,6 +17,10 @@ never executes, fetches, or writes anything it analyses. Its value is as a
 **safety guardrail** that a human operator, a CI gate, or an agent runtime
 consults before deciding whether a command is safe to run.
 
+JavaScript source is also accepted through `front/js`, currently an opaque
+foundation stub: every input emits `CodeExec(⊤)` with `top` and `conservative`
+true. It performs no parsing or evaluation and stays deny-or-inspect.
+
 ## Supported Versions
 
 > **Assumption — to be completed by maintainers.** The repository currently
@@ -93,7 +97,7 @@ control** and the data it unavoidably touches.
 
 ### Attack Surface
 
-- **CLI argv** — `flowsh [--lang bash|posh] [--json] '<command>'`; the positional command, the `--lang` value, and flags ([cmd/flowsh/main.go](cmd/flowsh/main.go)).
+- **CLI argv** — `flowsh [--lang bash|posix|posh|js] [--json] '<command>'`; the positional command, the `--lang` value, and flags ([cmd/flowsh/main.go](cmd/flowsh/main.go)).
 - **stdin** — the entire command text when no positional argument is given or `-` is passed ([cmd/flowsh/main.go](cmd/flowsh/main.go)).
 - **Library API** — the public embedding package `github.com/v0lka/flowsh/api` (`api.Analyze(lang, src)`, `api.AnalyzeWith`, and the re-exported `Report`/`Options` types), consumed by other Go programs that embed the analyser. The optional `policy` package evaluates its reports with trusted caller configuration; `internal/analysis` and other `internal/` packages remain private ([api/api.go](api/api.go), [ADR-0010](specs/decisions/0010-public-embedding-api.md), [policy specification](specs/domains/policy.md)).
 - **Bash parser** — `mvdan.cc/sh/v3` over untrusted source ([front/bash/parse.go](front/bash/parse.go)).

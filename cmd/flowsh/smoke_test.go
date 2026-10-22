@@ -88,22 +88,28 @@ func TestSmoke(t *testing.T) {
 	}
 	bin := buildSmokeBinary(t, t.TempDir())
 
-	t.Run("bash JSON", func(t *testing.T) {
-		out, code := runSmoke(t, bin, "", "--lang", "bash", "--json", "rm -rf $HOME")
-		if code != 0 {
-			t.Fatalf("exit %d, want 0", code)
-		}
-		rep := decodeSmoke(t, out)
-		if rep.Lang != string(api.LangBash) {
-			t.Errorf("lang = %q, want %q", rep.Lang, api.LangBash)
-		}
-		if len(rep.Effects) == 0 {
-			t.Errorf("no effects for %q", rep.Input)
-		}
-		if rep.ToolVersion != "flowsh/v3" {
-			t.Errorf("toolVersion = %q, want %q", rep.ToolVersion, "flowsh/v3")
-		}
-	})
+	for _, tc := range []struct {
+		lang api.Lang
+		src  string
+	}{
+		{api.LangBash, "rm -rf $HOME"},
+		{api.LangPowerShell, "Remove-Item -Recurse -Force $HOME"},
+		{api.LangJavaScript, "const x = 1;"},
+	} {
+		t.Run(string(tc.lang)+" JSON", func(t *testing.T) {
+			out, code := runSmoke(t, bin, "", "--lang", string(tc.lang), "--json", tc.src)
+			if code != 0 {
+				t.Fatalf("exit %d, want 0", code)
+			}
+			rep := decodeJSON(t, out)
+			if rep.Lang != string(tc.lang) || len(rep.Effects) == 0 || rep.ToolVersion != api.ToolVersion {
+				t.Fatalf("unexpected report: %+v", rep)
+			}
+			if tc.lang == api.LangJavaScript && (len(rep.Effects) != 1 || !rep.Top || !rep.Conservative || !rep.HasTop()) {
+				t.Fatalf("expected a JavaScript top report, got %+v", rep)
+			}
+		})
+	}
 
 	t.Run("version", func(t *testing.T) {
 		out, code := runSmoke(t, bin, "", "--version")
@@ -119,20 +125,6 @@ func TestSmoke(t *testing.T) {
 		}
 		if !strings.Contains(out, engine.SchemaVersion) {
 			t.Errorf("--version output missing the engine schema %q:\n%s", engine.SchemaVersion, out)
-		}
-	})
-
-	t.Run("posh JSON", func(t *testing.T) {
-		out, code := runSmoke(t, bin, "", "--lang", "posh", "--json", "Remove-Item -Recurse -Force $HOME")
-		if code != 0 {
-			t.Fatalf("exit %d, want 0", code)
-		}
-		rep := decodeSmoke(t, out)
-		if rep.Lang != string(api.LangPowerShell) {
-			t.Errorf("lang = %q, want %q", rep.Lang, api.LangPowerShell)
-		}
-		if len(rep.Effects) == 0 {
-			t.Errorf("no effects for %q", rep.Input)
 		}
 	})
 
