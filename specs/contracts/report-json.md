@@ -81,9 +81,13 @@ The emitted document has the envelope:
 
 JavaScript retains the same report shape and version tags. Understood pure
 programs have `effects: []`, no uncertainty flags, and no canonical form; they
-validate but remain uncovered and deny under policy. Unsupported reached
-execution emits `CodeExec(⊤)` with Conservative and a source-located why-trace;
-parse/budget failures also set Top and use the `literal:js-opaque` marker
+validate but remain uncovered and deny under policy. A leading shebang is
+inert and retains the original source positions. Unsupported reached execution,
+literal decoding, and primitive coercions emit `CodeExec(⊤)` with Conservative,
+a reason, and a source-located why-trace. Supported abstract operations may
+still yield unknown values (for example, a branch join); this alone does not
+set uncertainty flags. Parse/budget failures, including the delimiter guard
+and parser timeout, also set Top and use the `literal:js-opaque` marker
 without a source location for the failure, with the explanation retained in
 `reason`. Command-specific binding metadata remains empty until the JS effect
 binder exists. `--lang auto` still selects Bash or PowerShell only.

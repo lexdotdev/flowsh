@@ -8,6 +8,10 @@ import (
 	"github.com/odvcencio/gotreesitter/grammars"
 )
 
+// parseTimeoutMicros bounds parser work before normalization can check its
+// node/depth limits. Keep this safety net enabled in every build, including -race.
+const parseTimeoutMicros uint64 = 2_000_000
+
 type escapedIdentifier struct{}
 
 // node owns a normalized, position-preserving syntax tree.
@@ -60,7 +64,11 @@ func (n *node) operator() string {
 	return ""
 }
 
-func parse(src string) (root *node, reason string) {
+func parse(src string) (*node, string) {
+	return parseWithTimeout(src, parseTimeoutMicros)
+}
+
+func parseWithTimeout(src string, timeoutMicros uint64) (root *node, reason string) {
 	defer func() {
 		if p := recover(); p != nil {
 			root = nil
@@ -76,16 +84,15 @@ func parse(src string) (root *node, reason string) {
 	if !utf8.ValidString(src) {
 		return nil, "JavaScript source is not valid UTF-8"
 	}
+	if exceedsDelimiterDepth(src) {
+		return nil, "JavaScript source delimiter nesting limit exceeded"
+	}
 	lang := grammars.JavascriptLanguage()
 	if lang == nil {
 		return nil, "JavaScript grammar unavailable"
 	}
 	p := gotreesitter.NewParser(lang)
-	// No wall-clock parse deadline: a timed budget would make the result
-	// depend on host load rather than on the source (ADR-0012's rationale,
-	// applied to every build). Parsing stays bounded by the deterministic
-	// source/node/depth limits below plus the parser's own deterministic caps.
-	p.SetTimeoutMicros(0)
+	p.SetTimeoutMicros(timeoutMicros)
 	tree, err := p.Parse([]byte(src))
 	if err != nil {
 		return nil, "JavaScript parse failed"
@@ -95,6 +102,9 @@ func parse(src string) (root *node, reason string) {
 	}
 	defer tree.Release()
 	if tree.ParseStoppedEarly() {
+		if tree.ParseStopReason() == gotreesitter.ParseStopTimeout {
+			return nil, "JavaScript parse timeout"
+		}
 		return nil, "JavaScript parse stopped early"
 	}
 	r := tree.RootNode()
@@ -124,4 +134,36 @@ func parse(src string) (root *node, reason string) {
 		return out
 	}
 	return copyNode(r, 0, ""), ""
+}
+
+// exceedsDelimiterDepth is a linear admission check, not a JavaScript lexer.
+// It counts raw delimiters even in literals/comments, conservatively rejecting
+// deeply delimited data too. The parser timeout covers other expensive shapes;
+// normalization still checks actual syntax-tree depth after parsing.
+func exceedsDelimiterDepth(src string) bool {
+	var closing [maxDepth]byte
+	depth := 0
+	for i := range len(src) {
+		var end byte
+		switch src[i] {
+		case '(':
+			end = ')'
+		case '[':
+			end = ']'
+		case '{':
+			end = '}'
+		case ')', ']', '}':
+			if depth > 0 && closing[depth-1] == src[i] {
+				depth--
+			}
+		}
+		if end != 0 {
+			if depth == len(closing) {
+				return true
+			}
+			closing[depth] = end
+			depth++
+		}
+	}
+	return false
 }

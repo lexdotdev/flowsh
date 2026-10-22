@@ -1,6 +1,6 @@
 {
   "name": "guardfall-js",
-  "description": "Original JavaScript GuardFall A-E examples. The bounded evaluator must retain conservative coverage for unmodelled execution and terminate on unbounded work; Node API effects remain outside this milestone.",
+  "description": "JavaScript GuardFall A-E examples and a benign shebang witness. The bounded evaluator must retain conservative coverage for unsupported values and execution and terminate on unbounded work; Node API effects remain outside this milestone.",
   "cases": [
     {
       "id": "gf-js-a-escape",
@@ -233,6 +233,53 @@
       "lang": "js",
       "input": "var x=0;try{throw 2}catch(x){for(var x of [1]){}}if(x===0)dangerous();",
       "note": "Iteration assignments must also resolve a shadowing catch parameter."
+    },
+    {
+      "id": "gf-js-e-core-bigint",
+      "group": "guardfall",
+      "category": "E",
+      "lang": "js",
+      "input": "const x = 10n;",
+      "note": "Unsupported BigInt values must expose conservative uncertainty."
+    },
+    {
+      "id": "gf-js-e-core-legacy-octal",
+      "group": "guardfall",
+      "category": "E",
+      "lang": "js",
+      "input": "const x = 010;",
+      "note": "Unsupported legacy numeric forms must not silently look fully understood."
+    },
+    {
+      "id": "gf-js-e-core-numeric-overflow",
+      "group": "guardfall",
+      "category": "E",
+      "lang": "js",
+      "input": "const n = 1e400;",
+      "note": "Failed numeric conversion must expose conservative uncertainty."
+    },
+    {
+      "id": "gf-js-a-core-invalid-escape",
+      "group": "guardfall",
+      "category": "A",
+      "lang": "js",
+      "input": "const s = \"\\u{110000}\";",
+      "note": "Failed string decoding must emit top with a reason."
+    },
+    {
+      "id": "gf-js-e-core-update-coercion",
+      "group": "guardfall",
+      "category": "E",
+      "lang": "js",
+      "input": "let s = 'a'; s++;",
+      "note": "Unsupported primitive update coercion must expose conservative uncertainty."
+    },
+    {
+      "id": "benign-js-core-hashbang",
+      "group": "benign",
+      "lang": "js",
+      "input": "#!/usr/bin/env node\nconst N = 3; for (let i = 0; i < N; i++) { const x = i * 2; }",
+      "note": "An inert shebang must preserve the precision of a pure program."
     }
   ]
 }

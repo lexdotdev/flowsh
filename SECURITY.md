@@ -259,8 +259,9 @@ implementation detail:
   interpreter by its step budget and function/alias/record caps, and the
   PowerShell parser by its wall-clock timeout
   ([front/bash/exec.go](front/bash/exec.go), [front/ps/parse.go](front/ps/parse.go)).
-  JavaScript parsing/normalization and evaluation also carry source, depth,
-  node, step, value-size, and recording limits
+  JavaScript checks source size and raw delimiter depth before parsing, keeps
+  a two-second parser deadline in every build, and bounds normalization and
+  evaluation with depth, node, step, value-size, and recording limits
   ([JavaScript frontend](specs/domains/javascript-frontend.md#configuration)).
 - Parsing and lowering MUST NOT panic on malformed input; every failure MUST
   degrade to ⊤ (CodeExec over the any-target scope) with a human-readable
@@ -273,6 +274,10 @@ implementation detail:
   Understood effect-free source may yield a valid but uncovered report; report
   policy MUST deny it with `uncovered_report`. Analysis MUST NEVER turn source
   it did not understand into a benign/no-effect result.
+  Unsupported JavaScript literal decoding and primitive coercions MUST emit
+  the canonical top effect with `conservative` and a reason. Abstract unknown
+  values from supported operations, such as branch joins, do not by themselves
+  mean the source was unsupported.
 
 ### Output Encoding & Injection Prevention
 

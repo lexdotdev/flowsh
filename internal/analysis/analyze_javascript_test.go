@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/v0lka/flowsh/engine"
@@ -10,6 +11,7 @@ func TestJavaScriptPureReports(t *testing.T) {
 	a := mustAnalyzer(t)
 	for _, tc := range []struct{ name, src string }{
 		{"empty", ""}, {"pure", "const x=1;"}, {"finite loop", "let x=0;for(let i=0;i<3;i++)x+=i;"}, {"dormant body", "function f(){unknown()}"},
+		{"hashbang", "#!/usr/bin/env node\nconst N=3;for(let i=0;i<N;i++){const x=i*2;}"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := a.AnalyzeWith(LangJavaScript, tc.src, Options{Root: "input.js"})
@@ -31,7 +33,7 @@ func TestJavaScriptPureReports(t *testing.T) {
 
 func TestJavaScriptDegradationLocations(t *testing.T) {
 	a := mustAnalyzer(t)
-	r := a.AnalyzeWith(LangJavaScript, "const x=1;\nunknown();", Options{Root: "input.js"})
+	r := a.AnalyzeWith(LangJavaScript, "#!/usr/bin/env node\nunknown();", Options{Root: "input.js"})
 	if r.Top || !r.Conservative || !r.HasTop() || !r.Covered() {
 		t.Fatalf("wrong partial degradation: %+v", r)
 	}
@@ -54,5 +56,31 @@ func TestJavaScriptDegradationLocations(t *testing.T) {
 		if !r.Top || !r.Conservative || !r.HasTop() || r.Reason == "" {
 			t.Fatalf("whole-program failure must be top: %+v", r)
 		}
+	}
+}
+
+func TestJavaScriptUnsupportedValueReports(t *testing.T) {
+	a := mustAnalyzer(t)
+	for _, tc := range []struct{ name, src string }{
+		{"bigint", `const x=10n;`},
+		{"legacy octal", `const x=010;`},
+		{"numeric overflow", `const n=1e400;`},
+		{"invalid escape", `const s="\u{110000}";`},
+		{"update coercion", `let s="a";s++;`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := a.Analyze(LangJavaScript, tc.src)
+			encoded, err := r.Encode()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded Report
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if !decoded.Conservative || decoded.Top || decoded.Reason == "" || !decoded.HasTop() || !decoded.Covered() {
+				t.Fatalf("unsupported value lost uncertainty in JSON: %s", encoded)
+			}
+		})
 	}
 }

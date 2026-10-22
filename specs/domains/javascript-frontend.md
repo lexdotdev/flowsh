@@ -13,7 +13,7 @@
 - `front/js/exec.go` — statements, scope, hoisting, completion states, loops, switch, and exceptions.
 - `front/js/analyze_test.go` — semantic matrix, resolver witnesses, bounds, concurrency, and fuzz seeds.
 - `front/js/regressions_test.go` — reachable-call, signed-zero, key, and identifier regressions.
-- `internal/analysis/analyze.go`, `internal/analysis/analyze_js_test.go` — report assembly and source locations.
+- `internal/analysis/analyze.go`, `internal/analysis/analyze_javascript_test.go` — report assembly and source locations.
 - `api/api_test.go`, `cmd/flowsh/smoke_test.go`, `policy/policy_test.go` — consumer contracts.
 - `testdata/corpus/guardfall_js.json` — GuardFall A–E conservative coverage.
 
@@ -47,7 +47,7 @@ func AnalyzeWith(name, src string, resolver Resolver) *Result
 
 `Value` is a frontend-local lattice, separate from the frozen effect IR. Its zero value is unknown; exact elements include strings, numbers, booleans, null, undefined, function bodies, and bounded plain objects/arrays. A join preserves equal primitive values or identical immutable snapshots; disagreement becomes unknown. Taint always joins, independently of knownness. Unknown is distinct from JavaScript `undefined`.
 
-Numeric lattice equivalence follows [ECMAScript SameValue](https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-numeric-types-number-sameValue): signed zeros differ and NaNs agree. JavaScript strict equality still equates the zero signs and rejects NaN equality. Unsupported primitive update conversions return unknown for both the stored value and the postfix result, preserving taint; numeric updates remain exact.
+Numeric lattice equivalence follows [ECMAScript SameValue](https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-numeric-types-number-sameValue): signed zeros differ and NaNs agree. JavaScript strict equality still equates the zero signs and rejects NaN equality. Unsupported primitive update conversions return unknown for both the stored value and the postfix result, preserving taint, and emit a conservative top effect with a reason; numeric updates remain exact.
 
 Escaped identifiers are explicitly unsupported during normalization. Their raw spelling differs from the [identifier name](https://tc39.es/ecma262/multipage/ecmascript-language-lexical-grammar.html#sec-names-and-keywords), so treating the spelling as a lexical binding could bypass shadowing. Unescaped `undefined` first resolves lexical bindings and uses the built-in value only when unbound.
 
@@ -78,12 +78,12 @@ explicit --lang js/javascript/node/nodejs
 
 | Construct | Evaluation | Test coverage |
 | --- | --- | --- |
-| `var`/`let`/`const`, assignment, comments, empty statements | Case-sensitive state, block scope, var hoisting, TDZ/constant degradation | `TestValuesAndStatements`, `TestDegradeRules` |
+| `var`/`let`/`const`, assignment, comments, leading shebang, empty statements | Case-sensitive state, block scope, var hoisting, TDZ/constant degradation; shebangs are inert and preserve source positions | `TestValuesAndStatements`, `TestDegradeRules`, `TestHashbangIsInert` |
 | Object/array destructuring, defaults, rest, holes | Exact own literal fields/elements; missing properties and unknown receivers/iterables degrade | `TestValuesAndStatements`, `TestDegradeRules` |
-| String/number/boolean/null/undefined literals | Exact primitive values; unsupported encodings/numeric forms yield unknown | `TestValuesAndStatements` |
+| String/number/boolean/null/undefined literals | Exact primitive values; unsupported encodings/numeric forms yield unknown and conservative top with a reason | `TestValuesAndStatements`, `TestUnsupportedValuesDegrade` |
 | Plain object/array and JSON-shaped literals | Immutable bounded snapshots; literal property/index reads | `TestValuesAndStatements` |
 | Templates and string concatenation | Known primitive components fold; unknown/coercible components yield unknown, with top for unmodelled conversion | `TestUnknownTemplateIsNotLiteral`, `TestDegradeRules` |
-| Numeric arithmetic, bitwise `&`/`\|`/`^`, numeric comparisons, equality, unary operations | Fold documented primitive cases; unsupported coercions yield unknown or top where execution is possible | `TestValuesAndStatements`, `TestDegradeRules` |
+| Numeric arithmetic, bitwise `&`/`\|`/`^`, numeric comparisons, equality, unary operations | Fold documented primitive cases; unsupported coercions yield unknown and top | `TestValuesAndStatements`, `TestDegradeRules`, `TestUnsupportedValuesDegrade` |
 | `&&`, `\|\|`, `??`, ternary | Respect known reachability; unknown alternatives join state and values | `TestValuesAndStatements`, `TestHeadersAndUnknownExceptions` |
 | `if`/`else` | Select a known branch; fork and join unknown branches | `TestValuesAndStatements` |
 | `for`, `while`, `do-while` | Evaluate initializer/test/update/body in order; charge each iteration; unknown bounds widen mutable state and degrade | `TestValuesAndStatements`, `TestBudgetPreservesEffects` |
@@ -101,7 +101,8 @@ Function **invocation** always remains conservative in this milestone. Parameter
 
 | Construct | Result |
 | --- | --- |
-| Parse error, missing syntax, stopped parse, parser/normalizer failure | Whole-unit top with fixed diagnostic; no salvaged prefix treated as complete |
+| Source size/raw delimiter depth limit, parse timeout/error, missing syntax, stopped parse, parser/normalizer failure | Whole-unit top with fixed diagnostic; no salvaged prefix treated as complete |
+| Unsupported numeric literals, failed string decoding, unsupported primitive unary/update coercions | Unknown + top with Conservative, a fixed reason, and a source-located derivation |
 | Exhausted execution budget or internal evaluator panic | Whole-unit top; previously discovered effects retained |
 | Unknown loop bound/iterable (incl. `for await`) | Top effect; mutable state widened; possible body, zero-iteration, and TypeError throw outcomes retained |
 | Classes/methods, generators/async iterators, accessors, Proxy, `with` | Affected value unknown and top for unsupported execution |
@@ -126,7 +127,7 @@ The public facade supplies no JS resolver yet. The function-valued seam accepts 
 
 An understood effect-free program (including empty library input, declarations, finite pure loops, and dormant functions) returns `effects: []`, no uncertainty flags, and no canonical form. It validates but `Covered()` is false; policy denies it with `uncovered_report`, matching existing benign Bash no-ops. The frontend manufactures neither an effect nor a conservative flag to satisfy coverage.
 
-Unsupported reached execution emits Direct `CodeExec(ScopeTop())`, certain and irreversible, with a fixed reason and a source-located derivation. `Conservative` is true; `Top` marks a whole-unit failure, not every local unknown call. Shared scoring supplies Critical severity for top. The facade preserves input/root and version tags. Command binding metadata remains empty because no JS effect binder is installed.
+Unsupported reached execution, literal decoding, and primitive coercions emit Direct `CodeExec(ScopeTop())`, certain and irreversible, with a fixed reason and a source-located derivation. `Conservative` is true; `Top` marks a whole-unit failure, not every local unknown call or value. Abstract unknowns produced by supported operations, such as joining different branch values, remain valid lattice results and do not by themselves imply unsupported analysis. Shared scoring supplies Critical severity for top. The facade preserves input/root and version tags. Command binding metadata remains empty because no JS effect binder is installed.
 
 Whole-unit failures without a parsed source location use the fixed `literal:js-opaque` marker without a location; the diagnostic stays in `reason`. Earlier derivations retain their source locations when evaluation exhausts its budget.
 
@@ -146,20 +147,25 @@ Whole-unit failures without a parsed source location use the fixed `literal:js-o
 | Bound | Value |
 | --- | --- |
 | Source bytes | 1 MiB |
+| Raw delimiter nesting before parsing | 256 |
+| Parser wall-clock timeout | 2 seconds in every build, including `-race` |
 | Normalization nodes / depth | 50,000 / 256 |
 | Evaluation steps / expression depth | 50,000 / 256 |
 | Container entries / recorded effects or derivations | 1,024 |
 | Materialized string bytes | 65,536 |
 
-The frontend sets no wall-clock parse deadline in any build. A timed budget
-would make the result depend on host load rather than on the source — a
-contended CI host tripped the original 250 ms deadline mid-parse and produced a
-spuriously different report — so ADR-0012's rationale is applied to every
-build. Parsing stays bounded by the pinned parser's deterministic
-iteration/node/memory/depth caps plus the source/node/depth limits above; a
-parse that the parser stops early still degrades to top. No timeout goroutine
-is created. String decoding/concatenation and state copying also consume the
-step budget.
+Before invoking the parser, a linear scan checks raw `(`/`[`/`{` nesting with
+a fixed-size stack. Matching closing delimiters pop the stack; mismatched
+closers do not. This is a conservative byte-level admission check: delimiters
+inside strings, comments, templates, and regex literals also count, so deeply
+delimited data may degrade even when its syntax-tree depth would be small.
+The parser's two-second deadline is an additional safety net for other input
+shapes; its polling and cleanup can overrun that deadline. Normalization's
+node/depth limits apply only after the parser returns. A stopped or timed-out
+parse yields whole-unit top, never a partially analyzed prefix. The deadline
+can make a heavily contended host degrade earlier; availability takes
+precedence over precision at that boundary. No timeout goroutine is created.
+String decoding/concatenation and state copying also consume the step budget.
 Invalid UTF-8 source degrades before parsing. Bounds are compile-time constants,
 not source-controlled settings.
 

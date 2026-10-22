@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/v0lka/flowsh/engine"
 )
@@ -39,8 +40,6 @@ func TestValuesAndStatements(t *testing.T) {
 		{"paragraph separator continuation", "const x='\\ ';", "x", stringValue("")},
 		{"number", `const x = 0o10 + 0x10 + 0b10 + 1_000;`, "x", numberValue(1026)},
 		{"bitwise", `const x=(5&3)|(2^1);`, "x", numberValue(3)},
-		{"bigint", `const x=1n;`, "x", Value{}},
-		{"legacy octal", `const x=0755;`, "x", Value{}},
 		{"exponent infinity", `const x = 1 ** (1 / 0);`, "x", numberValue(math.NaN())},
 		{"exponent NaN", `const x = 1 ** (0 / 0);`, "x", numberValue(math.NaN())},
 		{"template", "const a = 3; const x = `item-${a}`;", "x", stringValue("item-3")},
@@ -151,6 +150,56 @@ func TestDegradeRules(t *testing.T) {
 	}
 }
 
+func TestUnsupportedValuesDegrade(t *testing.T) {
+	for _, tc := range []struct{ name, src, reason string }{
+		{"bigint", `const x=10n;`, "unsupported JavaScript numeric literal"},
+		{"legacy octal", `const x=010;`, "unsupported JavaScript numeric literal"},
+		{"numeric overflow", `const x=1e400;`, "unsupported JavaScript numeric literal"},
+		{"large hexadecimal", `const x=0x20000000000001;`, "unsupported JavaScript numeric literal"},
+		{"invalid escape", `const x="\u{110000}";`, "unsupported JavaScript string literal"},
+		{"lone surrogate", `const x="\uD800";`, "unsupported JavaScript string literal"},
+		{"string postfix", `let x="a";const y=x++;`, "JavaScript update coercion is unmodelled"},
+		{"boolean prefix", `let x=true;const y=--x;`, "JavaScript update coercion is unmodelled"},
+		{"null postfix", `let x=null;const y=x--;`, "JavaScript update coercion is unmodelled"},
+		{"undefined prefix", `let x;const y=++x;`, "JavaScript update coercion is unmodelled"},
+		{"primitive unary", `const x=+"1";`, "JavaScript primitive coercion is unmodelled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, s := analyze("values.js", tc.src, nil)
+			checkContract(t, r)
+			if r.Top || !r.Conservative || r.Reason != tc.reason || s == nil {
+				t.Fatalf("unsupported value lacks a local degradation: %+v", r)
+			}
+			expectValue(t, s, "x", Value{})
+			if strings.Contains(tc.src, "const y=") {
+				expectValue(t, s, "y", Value{})
+			}
+			if len(r.Derivations) == 0 || len(r.Derivations[0].Atoms) == 0 {
+				t.Fatal("missing degradation provenance")
+			}
+			loc := r.Derivations[0].Atoms[0].Loc
+			if loc == nil || loc.File != "values.js" || loc.Line != 1 {
+				t.Fatalf("missing source location: %+v", loc)
+			}
+		})
+	}
+}
+
+func TestHashbangIsInert(t *testing.T) {
+	for _, tc := range []struct{ name, src string }{
+		{"pure loop", "#!/usr/bin/env node\nconst N=3;for(let i=0;i<N;i++){const x=i*2;}"},
+		{"CRLF", "#!/usr/bin/env node\r\nconst x=1;"},
+		{"hashbang only", "#!/usr/bin/env node"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _ := evaluate(t, tc.src)
+			if len(r.Effects) != 0 || r.Reason != "" {
+				t.Fatalf("hashbang fabricated an effect: %+v", r)
+			}
+		})
+	}
+}
+
 func TestForEachTDZPreservesCatchPath(t *testing.T) {
 	for _, tc := range []struct{ name, src string }{
 		{"of", `let x=[1];try{for(let x of x){}}catch(e){unknown()}`},
@@ -253,17 +302,38 @@ func TestDeterminismAndIndependentResults(t *testing.T) {
 func TestAdversarialBounds(t *testing.T) {
 	for _, tc := range []struct{ name, src string }{
 		{"deep", strings.Repeat("(", maxDepth+1) + "0" + strings.Repeat(")", maxDepth+1)},
+		{"parser recovery", strings.Repeat("(", 64_000) + strings.Repeat(")", 64_000)},
+		{"brackets", strings.Repeat("[", 32_000) + strings.Repeat("]", 32_000)},
+		{"braces", strings.Repeat("{", 32_000) + strings.Repeat("}", 32_000)},
+		{"mixed delimiters", strings.Repeat("([{", maxDepth) + strings.Repeat("}])", maxDepth)},
+		{"raw literal delimiters", "'" + strings.Repeat("(", maxDepth+1) + "'"},
+		{"raw comment delimiters", "/*" + strings.Repeat("{", maxDepth+1) + "*/"},
 		{"size", strings.Repeat(" ", maxSourceBytes+1)},
 		{"growth", `let x='x';while(true){x+=x;}`},
 		{"container cap", "[" + strings.Repeat("1,", maxRecorded) + "1]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			start := time.Now()
 			r := Analyze(tc.src)
+			// Leave room for scheduling and parser cleanup, including -race.
+			if elapsed := time.Since(start); elapsed > 6*time.Second {
+				t.Fatalf("adversarial analysis exceeded its latency bound: %s", elapsed)
+			}
 			checkContract(t, r)
 			if !r.Top {
 				t.Fatalf("expected bounded failure: %+v", r)
 			}
 		})
+	}
+}
+
+func TestParserTimeoutDiscardsPartialTree(t *testing.T) {
+	// Flat source passes the delimiter check. A 25 ms budget is longer than
+	// a Windows clock tick but too short to parse half a million statements.
+	src := strings.Repeat("0;", maxSourceBytes/2)
+	root, reason := parseWithTimeout(src, 25_000)
+	if root != nil || reason != "JavaScript parse timeout" {
+		t.Fatalf("timeout retained a partial tree: root=%v reason=%q", root != nil, reason)
 	}
 }
 

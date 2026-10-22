@@ -143,7 +143,7 @@ func (e *evaluator) statement(n *node, s *state) flows {
 		out := e.sequence(n.namedChildren(), s)
 		popScope(out)
 		return out
-	case "comment", "empty_statement", "function_declaration":
+	case "comment", "hash_bang_line", "empty_statement", "function_declaration":
 		return single(normal, s, undefined())
 	case "lexical_declaration", "variable_declaration":
 		kind := declarationKind(n)

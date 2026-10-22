@@ -23,12 +23,17 @@ func (e *evaluator) eval(n *node, s *state) Value {
 	switch n.kind {
 	case "number":
 		e.charge(len(n.text))
-		return parseNumber(n.text)
+		value := parseNumber(n.text)
+		if value.kind == "" {
+			e.degrade(n, "unsupported JavaScript numeric literal")
+		}
+		return value
 	case "string":
 		e.charge(len(n.text))
 		if text, ok := decodeString(n.text); ok {
 			return stringValue(text)
 		}
+		e.degrade(n, "unsupported JavaScript string literal")
 		return Value{}
 	case "true":
 		return boolValue(true)
@@ -142,6 +147,8 @@ func (e *evaluator) eval(n *node, s *state) Value {
 			value.Taint = old.Taint
 		case "", "object", "function":
 			e.unmodelled(n, s, "JavaScript update coercion is unmodelled")
+		default:
+			e.degrade(n, "JavaScript update coercion is unmodelled")
 		}
 		e.bindPattern(arg, value, s, "")
 		if strings.HasPrefix(strings.TrimSpace(n.text), n.operator()) {
@@ -209,6 +216,8 @@ func (e *evaluator) eval(n *node, s *state) Value {
 			}
 			if value.kind == "object" || value.kind == "function" || value.kind == "" {
 				e.unmodelled(n, s, "JavaScript object coercion is unmodelled")
+			} else {
+				e.degrade(n, "JavaScript primitive coercion is unmodelled")
 			}
 		default:
 			e.unmodelled(n, s, "unsupported JavaScript unary operation")
