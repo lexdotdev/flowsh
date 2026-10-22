@@ -98,7 +98,7 @@ func (p *Policy) Evaluate(r *api.Report) Decision {
 		return denied("invalid_report")
 	}
 	switch api.Lang(r.Lang) {
-	case api.LangBash, api.LangPOSIX, api.LangPowerShell:
+	case api.LangBash, api.LangPOSIX, api.LangPowerShell, api.LangJavaScript:
 	default:
 		return denied("invalid_report")
 	}

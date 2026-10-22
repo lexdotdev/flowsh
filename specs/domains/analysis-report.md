@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`internal/analysis` is the shared analysis facade behind the `flowsh` CLI and the embedding API. It is the single place that composes the two frontends (`front/bash`, `front/ps`), the knowledge-base binder (`bind`) and the frozen core (`engine`) into one deterministic, serialisable `Report`. It lives under `internal/` because the frozen core (`engine`) must stay frontend-free — the composition of frontends + binder + engine can only live above them. External Go programs reach it through the sibling `api/` embedding package (see [Public Embedding Surface](#public-embedding-surface-api)).
+`internal/analysis` is the shared analysis facade behind the `flowsh` CLI and the embedding API. It is the single place that composes the frontends (`front/bash`, `front/ps`, `front/js`), the knowledge-base binder (`bind`) and the frozen core (`engine`) into one deterministic, serialisable `Report`. It lives under `internal/` because the frozen core (`engine`) must stay frontend-free — the composition of frontends + binder + engine can only live above them. External Go programs reach it through the sibling `api/` embedding package (see [Public Embedding Surface](#public-embedding-surface-api)).
 
 ## Key Files
 
@@ -12,20 +12,21 @@
 - `internal/analysis/exfil_test.go` — exfiltration regression tests.
 - `internal/analysis/destructive_test.go` — knowledge-base destructive-class raising (a class-E entry raises to Critical; a KB class never lowers the effect-derived severity).
 - `internal/analysis/loc_test.go` — why-trace source locations and `Options.Root` → `Report.Root`.
+- `front/js/analyze.go`, `api/api_test.go` — opaque JavaScript frontend and shared public report-contract checks.
 - `internal/analysis/analyze_ps_test.go` — PowerShell provider options (`Options.Windows` toggles the Registry independently of the host OS).
 - `internal/analysis/vars_test.go` — host-table option (`Options.Vars`) end to end: seeded bindings resolve `$name`-derived targets, and the option never loosens the unseeded ⊤ default.
 - `internal/analysis/canonical.go` — the per-command resolution view (`CommandCall`, `CallRedirect`) with binary-name normalization (`normalizeBinary`), and the effect-based canonical form (`Canonical`, `buildCanonical`: staging fold + non-path target filter + deterministic key).
 - `internal/analysis/canonical_test.go` — the retry-splitting repros (npx vs `node_modules/.bin` binary path; staged write + `mv` vs `sed -i`), the normalization table, the staging-fold boundary rules and the ⊤-survival invariant.
 - `cmd/flowsh/main.go` — the CLI front-end that consumes this facade (see [CLI](cli.md)).
 - `api/api.go` — the public embedding surface: a thin type-alias re-export of this facade for external Go modules (see [Public Embedding Surface](#public-embedding-surface-api)).
-- `testdata/corpus/*.json` — the corpus documents loaded by `LoadCorpus` (`benign_bash.json`, `destructive_bash.json`, `guardfall_bash.json`, `guardfall_posix.json`, `guardfall_posh.json`, `resolution_bash.json`, `ps_cases.json`, `sudo_bash.json`, `external_bash.json`, `external_posh.json`); `testdata/corpus/README.md` documents the external balanced sample's provenance, licenses, methodology and the per-case `windows` provider-profile flag.
+- `testdata/corpus/*.json` — the corpus documents loaded by `LoadCorpus` (`benign_bash.json`, `destructive_bash.json`, `guardfall_bash.json`, `guardfall_posix.json`, `guardfall_posh.json`, `guardfall_js.json`, `resolution_bash.json`, `ps_cases.json`, `sudo_bash.json`, `external_bash.json`, `external_posh.json`); `testdata/corpus/README.md` documents the external balanced sample's provenance, licenses, methodology and the per-case `windows` provider-profile flag.
 - `engine/effect.go`, `engine/score.go`, `engine/report.go` — the frozen core types embedded in `Report`.
 
 ## Core Types
 
 ### Language selection
 
-`Lang` names the command-line dialect a source is written in; its three values are exactly the ones the CLI accepts on `--lang`.
+`Lang` names the command-line dialect a source is written in; its four values are exactly the ones the CLI accepts on `--lang`.
 
 ```go
 type Lang string
@@ -34,9 +35,10 @@ const (
 	LangBash       Lang = "bash"  // GNU bash argv with -flags and --options
 	LangPOSIX      Lang = "posix" // the POSIX shell (sh); the bash frontend in POSIX mode
 	LangPowerShell Lang = "posh"  // PowerShell cmdlet syntax; canonical name "posh"
+	LangJavaScript Lang = "js"    // Node.js source; currently an opaque top-only stub
 )
 
-var Langs = []Lang{LangBash, LangPOSIX, LangPowerShell} // canonical order
+var Langs = []Lang{LangBash, LangPOSIX, LangPowerShell, LangJavaScript} // canonical order
 ```
 
 `ParseLang` maps a user-supplied name onto a `Lang`, accepting the canonical spellings plus common aliases:
@@ -46,7 +48,8 @@ var Langs = []Lang{LangBash, LangPOSIX, LangPowerShell} // canonical order
 | `bash`, `shell` | `LangBash` (`"bash"`) |
 | `posix`, `sh` | `LangPOSIX` (`"posix"`) |
 | `posh`, `ps`, `pwsh`, `powershell` | `LangPowerShell` (`"posh"`) |
-| anything else | error `flowsh: unknown language %q (want bash\|posix\|posh)` |
+| `js`, `javascript`, `node`, `nodejs` | `LangJavaScript` (`"js"`) |
+| anything else | error `flowsh: unknown language %q (want bash\|posix\|posh\|js)` |
 
 ### Report — the JSON contract
 
@@ -82,7 +85,7 @@ The JSON field contract (a flowsh report is an engine report plus CLI metadata):
 | `schemaVersion` | string | Always `effect-ir/v2` (`engine.SchemaVersion`). |
 | `tool` | string | Always `flowsh` (`ToolName`). |
 | `toolVersion` | string | Always `flowsh/v3` (`ToolVersion`; v2 added the additive `commandCalls` and `canonical` fields, v3 the `score.cradleFlows`/`score.ingestFlows` network-flow fields). |
-| `lang` | string | `"bash"`, `"posix"` or `"posh"`. |
+| `lang` | string | `"bash"`, `"posix"`, `"posh"` or `"js"` (opaque stub). |
 | `input` | string | The analysed source text verbatim. |
 | `root` | string | The source name the input was read from (a file path, or `RootArgument`/`RootStdin`); present (`omitempty`) only when the caller named one via `Options.Root`. |
 | `effects` | array of `engine.Effect` | Normalised effects (merged by kind+mode, canonically sorted). Never `null` — always at least `[]`. |
@@ -198,6 +201,9 @@ Analyze(lang, src)                       analyze.go (package func)
         │
         └─ (*Analyzer).Analyze(lang, src)
                  │
+                 ├─ lang == LangJavaScript ─► analyzeJS(src, opts.Root)
+                 │        js.Analyze → one top effect → shared report assembly
+                 │
                  ├─ lang == LangPowerShell ──► analyzePS(src, opts.psOptions(), opts.Root)
                  │        ps.Parse → ps.LowerWith(opts) → normalizeEffects
                  │
@@ -215,6 +221,8 @@ Analyze(lang, src)                       analyze.go (package func)
 
 `Encode()` (CLI `--json`) validates and marshals the report with two-space indent.
 
+The JavaScript path is a [conservative stub](javascript-frontend.md): it always returns one top effect with `Top` and `Conservative` true, a fixed reason, shared scoring, a why-trace, and a canonical form. It preserves input/root and leaves call metadata empty. `Covered()` here confirms no silent miss, not semantic JS coverage. `Options.Windows` and `Options.Vars` are ignored by JS.
+
 ## Invariants
 
 - `Analyze` is total and deterministic: the frontends degrade to ⊤ rather than fail, so the returned `*Report` is never nil.
@@ -222,7 +230,7 @@ Analyze(lang, src)                       analyze.go (package func)
 - `Report.Covered()` is true iff the analysis produced at least one effect, degraded to ⊤ (`Top`), or is `Conservative` — the "no silent miss" property the GuardFall corpus checks.
 - `Report.SchemaVersion`, `Report.Tool` and `Report.ToolVersion` always equal `engine.SchemaVersion` (`effect-ir/v2`), `"flowsh"`, `"flowsh/v3"` respectively.
 - `Report.Destructiveness` is the join (max) of `engine.ComputeDestructiveness(effects)` and the join of the binder's per-call `Destructiveness` (which already folds each matched destructive-table class severity); the same KB-class severity is joined into `Score.Destructiveness` and `Score.Grade`, so a matched destructive class can only raise — never lower — the reported severity.
-- `ParseLang` returns `LangBash`, `LangPOSIX` or `LangPowerShell`, otherwise a non-nil error; it never returns an unknown `Lang` with a nil error.
+- `ParseLang` returns `LangBash`, `LangPOSIX`, `LangPowerShell` or `LangJavaScript`, otherwise a non-nil error; it never returns an unknown `Lang` with a nil error.
 - `defaultAnalyzer` loads the knowledge base at most once per process (`sync.OnceValues`), and every `Analyze` call shares that analyser.
 - `LoadCorpus` returns cases sorted by `ID`, with duplicate `ID`s rejected, so iterations are stable and unambiguous.
 - The `flowsh` package is the only composition point of frontends + binder + engine; `engine` imports no frontend.
@@ -245,7 +253,7 @@ Corpus location resolution (`internal/corpus/corpus.go`):
 - `CorpusDirFrom(start)` is the testable core that resolves the same path relative to an explicit starting directory (absolute-ised first).
 - Failure to find `go.mod` above the start yields `flowsh: go.mod not found above <dir>`.
 
-The facade reads no environment variables; its only runtime configuration is the `lang` argument and the optional `Options` — notably `Options.Windows` (the tri-state PowerShell Registry toggle) and `Options.Vars` (host-known shell variable bindings seeded into the bash/POSIX abstract state; the PowerShell path ignores the table).
+The facade reads no environment variables; its only runtime configuration is the `lang` argument and the optional `Options` — notably `Options.Windows` (the tri-state PowerShell Registry toggle) and `Options.Vars` (host-known shell variable bindings seeded into the bash/POSIX abstract state; the PowerShell and JavaScript paths ignore the table).
 
 ## Public Embedding Surface (`api/`)
 
@@ -257,7 +265,7 @@ The facade is consumed by external Go programs through the sibling top-level pac
 | --- | --- | --- |
 | type | `Lang`, `Report`, `DestructiveFinding`, `Analyzer`, `Options` | the same `analysis` types (`=`) |
 | var | `Langs` | `analysis.Langs` |
-| const | `ToolName`, `SchemaVersion`, `ToolVersion`, `RootArgument`, `RootStdin`, `LangBash`, `LangPOSIX`, `LangPowerShell` | the same `analysis` constants |
+| const | `ToolName`, `SchemaVersion`, `ToolVersion`, `RootArgument`, `RootStdin`, `LangBash`, `LangPOSIX`, `LangPowerShell`, `LangJavaScript` | the same `analysis` constants |
 | func | `ParseLang`, `Analyze`, `AnalyzeWith`, `NewAnalyzer`, `Bool` | one-line forwarders to `analysis` |
 
 Because every exported type is a type **alias**, the boundary is transparent — an embedding caller passes `api.Options` where an `analysis.Options` is expected and reads the same `Report` the CLI emits. A consequence of the alias (and not duplicating types) is that a change to an internal type is, by construction, a change to the public API.

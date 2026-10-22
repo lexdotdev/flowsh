@@ -142,6 +142,15 @@ sub-tick budget is not, because gotreesitter's deadline poll compares
 [ADR-0013](../decisions/0013-windows-clock-tick-parse-budget.md). `ps.Lower` also
 treats a nil program as ⊤ (`front/ps/lower.go`).
 
+### `front/js` — opaque JavaScript foundation
+
+`js.Analyze` always emits exactly one Direct `CodeExec(ScopeTop())` effect,
+including for empty or malformed source. `Top` and `Conservative` are true and a
+fixed reason explains that parsing and evaluation are unimplemented. The facade
+normalizes and scores it through the existing helpers, preserving Critical
+severity, the why-trace, and canonical output. `Covered()` confirms conservative
+coverage here, not recognition of JavaScript semantics.
+
 ## No-silent-miss invariant
 
 `analysis.Report.Covered` (`internal/analysis/analyze.go`) encodes the rule
@@ -165,7 +174,8 @@ work that must degrade to ⊤ (budget exhaustion, unknown).
   express it.
 - A ⊤ effect is `CertaintyCertain`, `TaintBottom`, `Reversible:false`.
 - An unparsable source yields a whole-program ⊤ with a non-empty `Reason`
-  (`Program.Top` for both frontends; `ExecResult.Top` for bash).
+  (`Program.Top` for bash/PowerShell; `ExecResult.Top` for bash;
+  `Result.Top` for the JavaScript stub).
 - The bash abstract execution always terminates within the step budget; running
   out of budget yields ⊤ and preserves the effects discovered so far.
 - `Result.Conservative` / `Report.Conservative` is true whenever a ⊤ effect is

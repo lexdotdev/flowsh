@@ -2,12 +2,13 @@
 
 ## Purpose
 
-`cmd/flowsh` is the public entry point of the effect analyser: it takes one or more shell or PowerShell commands (as a positional argument, on stdin, from a file, or one-per-line in batch mode), runs them through the `internal/analysis` facade, and prints the resulting effects as a human-readable summary or as a JSON report (a single document, or one NDJSON line per command). It is a thin arg-parsing / I/O shell over the facade — all analysis lives in [Analysis Report](analysis-report.md). Dialect sniffing (`--lang auto`), batch iteration and output framing are the CLI's own concern.
+`cmd/flowsh` is the public entry point of the effect analyser: it takes one or more shell, PowerShell, or JavaScript source inputs (as a positional argument, on stdin, from a file, or one-per-line in batch mode), runs them through the `internal/analysis` facade, and prints the resulting effects as a human-readable summary or as a JSON report (a single document, or one NDJSON line per command). It is a thin arg-parsing / I/O shell over the facade — all analysis lives in [Analysis Report](analysis-report.md). Dialect sniffing (`--lang auto`), batch iteration and output framing are the CLI's own concern.
 
 ## Key Files
 
 - `cmd/flowsh/main.go` — the command: the `exitOK`/`exitInternal`/`exitUsage`/`exitInput` exit codes, the `usageError`/`inputError` types + `exitCode`, `run`, `parseArgs`, `readInput`, `readStdin`, `runBatch`, `splitBatch`, `encodeCompact`, `detectLang`/`isAutoLang`, the `input` type, `writeText`, `writeWhy`, `oneLine`, and the `usage` text.
 - `cmd/flowsh/main_test.go` — in-process tests of `run` (flags, stdin/`-`, `--lang auto`, `--batch`, `--version`, exit codes, the extended summary).
+- `cmd/flowsh/smoke_test.go` — compiled CLI reports and exit statuses.
 - `cmd/flowsh/root_test.go` — tests of source naming (`report.root` per input source) and `--file` handling.
 
 ## Core Types
@@ -79,18 +80,20 @@ func oneLine(s string) string                        // collapse CR/LF to spaces
 `usage` documents the four invocation forms and the exit statuses:
 
 ```
-flowsh — effect report for a shell or PowerShell command
+flowsh — effect report for shell, PowerShell, or JavaScript source
 
 usage:
-  flowsh [--lang bash|posix|posh|auto] [--json] [--windows] '<command>'
-  echo '<command>' | flowsh [--lang bash|posix|posh|auto] [--json] [--windows]
-  flowsh --file <path> [--lang bash|posix|posh|auto] [--json]
-  flowsh --batch [--lang bash|posix|posh|auto] [--file <path>] [--windows]
+  flowsh [--lang bash|posix|posh|js|auto] [--json] [--windows] '<command>'
+  echo '<command>' | flowsh [--lang bash|posix|posh|js|auto] [--json] [--windows]
+  flowsh --file <path> [--lang bash|posix|posh|js|auto] [--json]
+  flowsh --batch [--lang bash|posix|posh|js|auto] [--file <path>] [--windows]
 
 options:
-  --lang bash|posix|posh|auto
+  --lang bash|posix|posh|js|auto
                      dialect of the input (default: bash); "auto" sniffs the
-                     input for PowerShell cmdlets/aliases and picks the dialect
+                     input for PowerShell cmdlets/aliases and picks bash or posh;
+                     js (aliases: javascript, node, nodejs) currently reports
+                     every input as ⊤, without parsing or evaluation
   --file PATH        read the command from PATH ("-" for stdin); the report's
                      root names the file
   --batch            read many commands (one per line) and write one JSON report
@@ -148,7 +151,7 @@ Argument parsing (`parseArgs`) applies each token in order, so flags may appear 
 
 | Token | Effect |
 | --- | --- |
-| `--lang <v>`, `-lang <v>` | Set `lang` to the next token (`bash`/`posix`/`posh`, an alias, or `auto`); error `"%s needs a value"` if it is last. |
+| `--lang <v>`, `-lang <v>` | Set `lang` to the next token (`bash`/`posix`/`posh`/`js`, an alias, or `auto`); error `"%s needs a value"` if it is last. |
 | `--lang=<v>`, `-lang=<v>` | Set `lang` to the value after `=`. |
 | `--file <v>`, `-file <v>` | Set `file` to the next token and `fileSet = true`; error `"%s needs a value"` if it is last. |
 | `--file=<v>`, `-file=<v>` | Set `file` and `fileSet = true`. |
@@ -175,6 +178,8 @@ Input selection (`readInput`, returning an `input{src, root}`):
 - A failure to read the source (a missing/unreadable file, a directory, an empty file or stdin) is an `inputError` and exits `3`, distinct from a usage error (`2`).
 - In batch mode (`--batch`) the selected source is split on newlines (via `splitBatch`), blank lines are dropped, and each remaining line is analysed in turn; `root` is the shared source name for every line.
 
+Explicit `--lang js` (aliases `javascript`, `node`, `nodejs`, trimmed and case-insensitive) routes source to the [JavaScript stub](javascript-frontend.md). Every submitted source receives one top effect with a reason; the stub performs no parsing or evaluation. `--lang auto` continues to choose bash or PowerShell only. Existing input validation and batch line splitting apply to JS too.
+
 ## Invariants
 
 - The exit status is exactly one of `0`, `1`, `2`, `3`: `0` for a produced report, `--help`, or `--version`; `1` for an internal analysis/encode failure; `2` for a usage error (a malformed invocation: flags, language, mutually exclusive sources, no input); `3` for an input error (the named source could not be read, or was empty).
@@ -197,7 +202,7 @@ The CLI has no config file or environment variables; all configuration is comman
 
 | Flag / form | Default | Valid values | Domain |
 | --- | --- | --- | --- |
-| `--lang`, `-lang`, `--lang=`, `-lang=` | `bash` | `bash`, `posix`, `posh`, `auto` (+ aliases via `ParseLang`) | Analysis dialect |
+| `--lang`, `-lang`, `--lang=`, `-lang=` | `bash` | `bash`, `posix`, `posh`, `js`, `auto` (+ aliases via `ParseLang`) | Analysis dialect |
 | `--file`, `-file`, `--file=`, `-file=` | off (use arg/stdin) | a path, or `-` for stdin | Input source; sets `report.root` |
 | `--batch`, `-batch` | off (single report) | — | Emit one NDJSON report per input line |
 | `--json`, `-json` | off (summary) | — | Output format |

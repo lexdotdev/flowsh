@@ -14,6 +14,7 @@ The leading letter groups the work by area:
 | `B` | Knowledge-base coverage (commands, dialects, destructive flags) |
 | `C` | Reliability and security hardening (fuzzing, bounded execution) |
 | `D` | Scoring and invariants |
+| `J` | JavaScript dialect (`front/js`) |
 
 ## A — Analysis pipeline and embedding API
 
@@ -48,6 +49,12 @@ The leading letter groups the work by area:
 | ID | Item | Status |
 | -- | ---- | ------ |
 | D6 | **Raise-only destructiveness.** The knowledge-base class may only raise the report's destructiveness, never lower it. | Done |
+
+## J — JavaScript dialect
+
+| ID | Item | Status |
+| -- | ---- | ------ |
+| J1 | **Dialect foundation.** The `js` dialect is registered end to end — the `LangJavaScript` value, CLI aliases (`js`/`javascript`/`node`/`nodejs`), facade routing, and the policy/embedding surface — and `front/js` lowers every input to a single conservative ⊤ effect without parsing, so the no-silent-miss invariant holds from day one (`specs/domains/javascript-frontend.md`). | Done |
 
 ## Future work
 

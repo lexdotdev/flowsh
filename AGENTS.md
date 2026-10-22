@@ -2,12 +2,12 @@
 
 ## Project
 
-`flowsh` — a Go effect-analysis engine that takes a shell or PowerShell command and reports the observable effects it implies (filesystem, environment, network, process, credential, code-execution, ...), a composite risk score, and credential-exfiltration findings. The module is `github.com/v0lka/flowsh`; the public binary is `flowsh`.
+`flowsh` — a Go effect-analysis engine that takes a shell, PowerShell, or JavaScript program and reports the observable effects it implies (filesystem, environment, network, process, credential, code-execution, ...), a composite risk score, and credential-exfiltration findings. The module is `github.com/v0lka/flowsh`; the public binary is `flowsh`.
 
 ## Layout
 
 - `engine/` — frozen, frontend-agnostic core: effect IR, value lattices, scoring, report format
-- `front/bash/`, `front/ps/` — the bash and PowerShell frontends
+- `front/bash/`, `front/ps/`, `front/js/` — bash, PowerShell, and the conservative JavaScript frontend stub
 - `kb/` — the embedded YAML knowledge base (`kb/data/*.yaml`)
 - `bind/` — command resolution and flag/operand binding
 - `internal/analysis/` — the composition facade (frontends + binder + core → `Report`)

@@ -2,24 +2,30 @@
 
 ## Boundary Rule
 
-A frontend (`front/bash`, `front/ps`) may import the core (`engine`) and lower its constructs into `engine.Effect`; the core never imports a frontend. Data crosses the boundary one way only: frontends produce effects, the core consumes them.
+A frontend (`front/bash`, `front/ps`, `front/js`) may import the core (`engine`) and lower its constructs into `engine.Effect`; the core never imports a frontend. Data crosses the boundary one way only: frontends produce effects, the core consumes them.
 
 ## Interfaces
 
 | Interface | Package | Consumed By | Purpose |
 | --------- | ------- | ----------- | ------- |
-| `engine.Effect` | `engine` | both frontends | the atom a frontend emits |
-| `engine.EffectKind`, `engine.EffectMode` | `engine` | both frontends | the closed kind/mode vocabulary |
-| `engine.Scope`, `engine.Taint` | `engine` | both frontends | target and provenance lattices |
-| `engine.Certainty` | `engine` | both frontends | belief strength |
+| `engine.Effect` | `engine` | frontends | the atom a frontend emits |
+| `engine.EffectKind`, `engine.EffectMode` | `engine` | frontends | the closed kind/mode vocabulary |
+| `engine.Scope`, `engine.Taint` | `engine` | frontends | target and provenance lattices |
+| `engine.Certainty` | `engine` | frontends | belief strength |
 | `engine.Report`, `Report.Normalize` | `engine` | frontends (bash `ExecResult` folds through it) | canonical effect aggregation |
-| `engine.Derivation`, `engine.Atom` | `engine` | both frontends | the concrete source facts (nodes/flags) a reported effect rests on — the why-trace vocabulary |
+| `engine.Derivation`, `engine.Atom` | `engine` | frontends | the concrete source facts (nodes/flags) a reported effect rests on — the why-trace vocabulary |
 | `bash.Resolver` (`func(*Command, *Program) bash.Resolution`) | `front/bash` | `bind`, via the facade | injected seam for ordinary-command effects and their `Derivation`s |
 | `ps.Result` | `front/ps` | `internal/analysis` | lowering outcome (mirrors `bind.Result`) |
+| `js.Result` | `front/js` | `internal/analysis` | one top effect plus Top/Conservative/Reason from the opaque JavaScript stub |
 
 ## Initialization
 
 The core has no initialization. A frontend is constructed per analysis: `bash.ExecBash(src, resolver)` or `ps.Parse` + `ps.Lower(prog)`. The bash `Resolver` is supplied by the composition layer (the facade passes a closure that calls `binder.BindBash`); passing `nil` disables command binding while the shell's own intrinsic effects are still emitted.
+
+`js.Analyze(src)` currently performs no parsing or lowering of individual
+constructs. It returns one `CodeExec(ScopeTop())` effect for every input,
+including empty or malformed source. The facade assembles its score,
+explanation, and canonical form through the same engine helpers.
 
 ## Data Flow Across Boundary
 
@@ -58,4 +64,5 @@ A frontend's emitted kinds | `DefaultReversible` and the corpus expectations
 - [Layer Architecture](../architecture/layers.md) — the import rules
 - [Effect IR](../domains/engine/README.md) — the target vocabulary
 - [bash Frontend](../domains/bash-frontend/README.md) — a producer
+- [JavaScript Frontend](../domains/javascript-frontend.md) — the conservative source-dialect stub
 - [Report Contract](report-json.md) — the downstream boundary

@@ -1,9 +1,27 @@
 package analysis
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestJavaScriptWhyUsesOpaqueMarker(t *testing.T) {
+	rep := analyzeJS("const PRIVATE_JS_SOURCE = 1;", "source.js")
+	if len(rep.Why) != 1 || len(rep.Why[0].Because) != 1 {
+		t.Fatalf("expected one opaque explanation, got %+v", rep.Why)
+	}
+	step := rep.Why[0].Because[0]
+	if !slices.Equal(step.Premises, []string{"literal:js-opaque"}) {
+		t.Fatalf("unexpected opaque premise: %v", step.Premises)
+	}
+	if step.Loc != nil {
+		t.Fatalf("opaque source has no token location, got %+v", step.Loc)
+	}
+	if rep.Reason == "" || rep.Reason == "js-opaque" {
+		t.Fatalf("expected an explanatory reason, got %q", rep.Reason)
+	}
+}
 
 // TestWhyLocationsCarryPositions is the acceptance criterion that a why-trace
 // step pins to the exact line/column of the token it cites: a two-line script

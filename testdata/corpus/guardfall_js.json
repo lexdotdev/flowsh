@@ -1,0 +1,11 @@
+{
+  "name": "guardfall-js",
+  "description": "Original JavaScript adversarial examples for classes A-E. The foundation frontend treats all source as opaque and must report top; these cases assert conservative coverage, not recognition of JavaScript effects.",
+  "cases": [
+    { "id": "gf-js-a-escape", "group": "guardfall", "category": "A", "lang": "js", "input": "require('node:fs')['rm\\u0053ync']('/tmp/flowsh-js', { recursive: true });", "note": "escaped property name; opaque source must stay top" },
+    { "id": "gf-js-b-fragments", "group": "guardfall", "category": "B", "lang": "js", "input": "require('node:child_process').execSync(['rm', '-rf', '/tmp/flowsh-js'].join(' '));", "note": "command assembled from fragments instead of shell IFS; opaque source must stay top" },
+    { "id": "gf-js-c-indirection", "group": "guardfall", "category": "C", "lang": "js", "input": "const op = process.env.OP; require('node:fs')[op]('/tmp/flowsh-js');", "note": "dynamically selected operation; opaque source must stay top" },
+    { "id": "gf-js-d-encoded", "group": "guardfall", "category": "D", "lang": "js", "input": "eval(Buffer.from('dm9pZCAw', 'base64').toString());", "note": "encoded source passed to eval; opaque source must stay top" },
+    { "id": "gf-js-e-loop", "group": "guardfall", "category": "E", "lang": "js", "input": "while (true) {}", "note": "unbounded work; the stub must return top without execution" }
+  ]
+}

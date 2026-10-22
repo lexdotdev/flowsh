@@ -15,6 +15,7 @@ For formats and update rules, see [META.md](META.md). For how to use the system,
 | Tweak scoring / destructiveness / exfil | [Scoring](domains/engine/scoring.md), [Report Contract](contracts/report-json.md) |
 | Add a frontend (new language) | [Layer Architecture](architecture/layers.md), [frontend <-> engine Contract](contracts/frontend-engine.md), [Analysis Facade](domains/analysis-report.md) |
 | Change bash parsing / abstract execution | [bash Frontend](domains/bash-frontend/README.md), [Parse & Normalize](domains/bash-frontend/parse-normalize.md), [Abstract Execution](domains/bash-frontend/abstract-exec.md) |
+| Change JavaScript registration or conservative stub | [JavaScript Frontend](domains/javascript-frontend.md), [Analysis Facade](domains/analysis-report.md), [frontend <-> engine Contract](contracts/frontend-engine.md) |
 | Change PowerShell parsing / lowering | [PowerShell Frontend](domains/powershell-frontend.md), [ADR-0014](decisions/0014-ps-abstract-state.md) |
 | Change command resolution or flag binding | [Binding](domains/binding.md), [bind <-> kb Contract](contracts/bind-kb.md) |
 | Add a NetEgress parameter or change the egress-target grammar | [Binding](domains/binding.md) (egress target gate), [Knowledge Base](domains/knowledge-base.md), [SECURITY.md](../SECURITY.md) (known risks) |
@@ -54,7 +55,8 @@ Spec-level view of the layered system (arrows point from a layer to what it depe
   │        │ bind                                             │
   │        v                                                  │
   │  knowledge-base.md            bash-frontend/,            │
-  │    (L2)                       powershell-frontend.md     │
+  │    (L2)                       powershell-frontend.md,     │
+  │        │                      javascript-frontend.md     │
   │        │                    │     (L2)                    │
   │        └────────┬───────────┘                             │
   │                 v                                         │
@@ -101,6 +103,7 @@ specs/
 │   │   ├── README.md                          bash frontend (domain overview)
 │   │   ├── parse-normalize.md                 parse + normalize detail
 │   │   └── abstract-exec.md                   abstract execution detail
+│   ├── javascript-frontend.md                 JavaScript foundation (front/js), opaque top-only stub
 │   ├── powershell-frontend.md                 PowerShell parse (tree-sitter) + Σ lowering
 │   ├── analysis-report.md                     composition facade + report + corpus
 │   ├── policy.md                              configurable report decisions
@@ -175,6 +178,7 @@ Every spec file, by path relative to `specs/`:
 - `domains/engine/effect-ir.md`
 - `domains/engine/lattices.md`
 - `domains/engine/scoring.md`
+- `domains/javascript-frontend.md`
 - `domains/knowledge-base.md`
 - `domains/policy.md`
 - `domains/powershell-frontend.md`

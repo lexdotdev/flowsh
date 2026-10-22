@@ -18,6 +18,7 @@ rejected. For deep structural changes, also read the relevant document in
 | `kb/` | Knowledge base | The embedded YAML command/parameter→effect dataset and the destructive-flags table (`kb/data/*.yaml`, loaded by `kb/loader.go`). |
 | `front/bash/` | Frontend | Parse POSIX/bash source and abstractly execute it; emit the effects the shell contributes and delegate ordinary commands through a resolver seam. |
 | `front/ps/` | Frontend | Parse PowerShell (tree-sitter) and lower it into the effect IR using its own alias/cmdlet tables. |
+| `front/js/` | Frontend | JavaScript foundation stub; every source emits one conservative top effect without parsing or evaluation. |
 | `bind/` | Binding | Resolve an invoked name and bind flags/operands against the knowledge base, producing `[]engine.Effect`. |
 | `internal/analysis/` | Composition | The single facade wiring frontends + binder + core into a deterministic `Report`. |
 | `internal/corpus/` | Tests | The test-only regression-corpus harness: the on-disk document format, its loader, and the group selectors used by the conformance tests and the benchmark harness. |
@@ -47,6 +48,9 @@ front/bash  bind   front/ps
         engine
 ```
 
+The JavaScript sibling adds `internal/analysis -> front/js -> engine`; its
+current stub discovers no command calls or API effects.
+
 Module-internal imports per layer:
 
 | Layer | Path | Imports (this module) |
@@ -55,8 +59,9 @@ Module-internal imports per layer:
 | Knowledge base | `kb/` | `engine` |
 | Shell frontend | `front/bash/` | `engine` |
 | PowerShell frontend | `front/ps/` | `engine` |
+| JavaScript frontend | `front/js/` | `engine` |
 | Binding | `bind/` | `engine`, `kb`, `front/bash` |
-| Composition | `internal/analysis/` | `engine`, `bind`, `front/bash`, `front/ps` |
+| Composition | `internal/analysis/` | `engine`, `bind`, `front/bash`, `front/ps`, `front/js` |
 | CLI | `cmd/flowsh/` | `internal/analysis` |
 
 ### The two invariants
@@ -126,7 +131,7 @@ so the same steps run on all three runners:
 7. **corpus + latency/recall gates** — `go test ./... -count=1` (a latency or
    recall regression fails this step). This step also runs the **CLI smoke**
    test [`cmd/flowsh/smoke_test.go`](cmd/flowsh/smoke_test.go): it builds the
-   binary and checks that it emits a valid JSON report for both dialects, from
+   binary and checks that it emits a valid JSON report for the registered dialects, from
    an argument and from stdin, plus `--version`, `--batch` (NDJSON),
    `--lang auto`, and the exit-code contract, across the process boundary.
 8. **bench smoke** — `go test ./engine/ -run '^$' -bench . -benchtime=50x`.
@@ -224,6 +229,7 @@ documents:
 | ---- | ----- | ---- |
 | `guardfall_bash.json` | `guardfall` | Adversarial bash inputs that evade a surface-level scanner (classes A–E). |
 | `guardfall_posh.json` | `guardfall` | The same, for PowerShell. |
+| `guardfall_js.json` | `guardfall` | Five original JavaScript A–E examples asserting conservative top coverage only. |
 | `guardfall_posix.json` | `guardfall` | The same, for the POSIX shell dialect (`lang: posix`). |
 | `destructive_bash.json` | `destructive` | Canonical destructive commands (recall; must reach at least the Medium grade). |
 | `ps_cases.json` | `ps` | PowerShell-specific recall cases. |

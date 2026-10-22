@@ -116,6 +116,41 @@ func TestNoEffectReportsDenyAsUncovered(t *testing.T) {
 	}
 }
 
+func TestJavaScriptReportsUseUncertaintyRules(t *testing.T) {
+	r, err := api.Analyze(api.LangJavaScript, "const x = 1;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The Grades entry in the "review" config below is live only while the
+	// stub's single CodeExec(⊤) effect grades Critical.
+	if r.Score.Grade != engine.DestructCritical {
+		t.Fatalf("grade = %v, want %v", r.Score.Grade, engine.DestructCritical)
+	}
+	for _, tc := range []struct {
+		name   string
+		config policy.Config
+		want   policy.Action
+	}{
+		{"defaults", policy.Config{}, policy.Deny},
+		{"review", policy.Config{
+			Unknown: policy.Review, Conservative: policy.Review,
+			Effects: map[engine.EffectKind]policy.Action{engine.KindCodeExec: policy.Allow},
+			Grades:  map[engine.Destructiveness]policy.Action{engine.DestructCritical: policy.Allow},
+		}, policy.Review},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newPolicy(t, tc.config).Evaluate(r)
+			if d.Action != tc.want || d.Allowed() {
+				t.Fatalf("got %+v, want %s", d, tc.want)
+			}
+			want := []policy.Match{{Code: "conservative", Action: policy.Review}, {Code: "unknown", Action: tc.want}}
+			if !slices.Equal(d.Matches, want) {
+				t.Fatalf("got matches %+v, want %+v", d.Matches, want)
+			}
+		})
+	}
+}
+
 func TestUncertaintyCannotBeAllowed(t *testing.T) {
 	for _, top := range []bool{false, true} {
 		r := report(engine.KindCodeExec)
