@@ -30,7 +30,7 @@ For formats and update rules, see [META.md](META.md). For how to use the system,
 | Understand the end-to-end pipeline | [Data Flow](architecture/data-flow.md) |
 | Understand the layering / import rules | [Layer Architecture](architecture/layers.md) |
 | Understand degrade-to-⊤ semantics | [Conservatism](architecture/conservatism.md) |
-| Understand why the IR is frozen / the KB is embedded / ⊤ is used / one module / the tool is named `flowsh` / public analysis and policy packages exist | [Decisions](decisions/_template.md) (ADR-0001 … ADR-0018) |
+| Understand why the IR is frozen / the KB is embedded / ⊤ is used / one module / the tool is named `flowsh` / public analysis and policy packages exist | [Decisions](decisions/_template.md) (ADR-0001 … ADR-0019) |
 | Add a new spec document | [META.md](META.md), [WORKFLOW.md](WORKFLOW.md) |
 
 ## Dependency Graph
@@ -76,6 +76,7 @@ Spec-level view of the layered system (arrows point from a layer to what it depe
               0013 windows-clock-tick 0014 ps-abstract-state
               0015 per-host-latency 0016 kb-load-budget
               0017 report-policy-package 0018 javascript-semantic-kernel
+              0019 determinism-gate
 ```
 
 ## Directory Listing
@@ -134,7 +135,8 @@ specs/
     ├── 0015-per-host-latency-reference.md
     ├── 0016-kb-load-budget-release-headroom.md
     ├── 0017-report-policy-package.md
-    └── 0018-javascript-semantic-kernel.md
+    ├── 0018-javascript-semantic-kernel.md
+    └── 0019-determinism-gate-parse-budget-trip.md
 ```
 
 ## Full File List
@@ -170,6 +172,7 @@ Every spec file, by path relative to `specs/`:
 - `decisions/0016-kb-load-budget-release-headroom.md`
 - `decisions/0017-report-policy-package.md`
 - `decisions/0018-javascript-semantic-kernel.md`
+- `decisions/0019-determinism-gate-parse-budget-trip.md`
 - `domains/analysis-report.md`
 - `domains/bash-frontend/README.md`
 - `domains/bash-frontend/abstract-exec.md`

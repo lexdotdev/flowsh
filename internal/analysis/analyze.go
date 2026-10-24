@@ -466,7 +466,7 @@ func (a *Analyzer) analyzeBash(v bash.Variant, lang Lang, src, root string, vars
 	}
 
 	rep := newReport(lang, src, root)
-	rep.Effects = normalizeEffects(res.Effects)
+	rep.Effects = applyRemoteWriteSinks(normalizeEffects(res.Effects))
 	// The knowledge-base destructive class joins (max) the effect-derived
 	// severity, so it can only raise the report's destructiveness (D6).
 	rep.Destructiveness = engine.ComputeDestructiveness(rep.Effects).Join(kbDestruct)
@@ -521,7 +521,7 @@ func analyzePS(src string, opts ps.Options, root string) *Report {
 	res := ps.LowerWith(prog, opts)
 
 	rep := newReport(LangPowerShell, src, root)
-	rep.Effects = normalizeEffects(res.Effects)
+	rep.Effects = applyRemoteWriteSinks(normalizeEffects(res.Effects))
 	// The PowerShell frontend computes its own destructive escalation (e.g.
 	// Remove-Item -Recurse/-Force → Critical) into res.Destructiveness. Fold it
 	// into the affect-derived severity exactly as the bash path folds kbDestruct

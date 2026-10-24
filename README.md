@@ -89,8 +89,7 @@ Use the optional `github.com/v0lka/flowsh/policy` package to evaluate reports wi
 ```
 flowsh [--lang bash|posix|posh|js|auto] [--json] [--windows] '<command>'
 echo '<command>' | flowsh [--lang bash|posix|posh|js|auto] [--json] [--windows]
-flowsh --file <path> [--lang bash|posix|posh|js|auto] [--json]
-flowsh --batch [--lang bash|posix|posh|js|auto] [--file <path>] [--windows]
+flowsh --batch [--lang bash|posix|posh|js|auto] [--windows]
 ```
 
 The command may be passed as a positional argument or on stdin.
@@ -101,7 +100,6 @@ The command may be passed as a positional argument or on stdin.
 | --- | --- |
 | `--lang bash\|posix\|posh\|js\|auto` | Dialect of the input. Default: `bash`. Canonical dialects: `bash`, `posix`, `posh`, `js`; aliases: `sh`/`shell`, `ps`/`pwsh`/`powershell`, `javascript`/`node`/`nodejs`; `auto` selects bash or PowerShell only. JS evaluates a bounded subset; calls and unsupported execution report ⊤. Pure programs may produce uncovered empty-effect reports. |
 | `--json` | Emit the full JSON report instead of the human summary. |
-| `--file <path>` | Read the command from `path` (`-` means stdin). The report's `root` names the file. |
 | `--batch` | Read many commands, one per line, and write one compact JSON report per line (NDJSON). |
 | `--explain`, `--why` | Print the why-trace explaining each reported effect. |
 | `--windows[=bool]` | Enable PowerShell Registry semantics on any host OS (default: the host's OS decides). |
