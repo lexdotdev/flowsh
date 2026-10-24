@@ -16,7 +16,7 @@ Specifications provide AI coding agents with deterministic context about system 
 
 ## File Organization
 
-The tree below is the concrete structure for flowsh (`github.com/v0lka/flowsh`). It covers the frozen core (`engine`), the knowledge base, command binding, the two frontends (`bash-frontend`, `powershell-frontend`), the analysis facade, and the CLI.
+The tree below is the concrete structure for flowsh (`github.com/v0lka/flowsh`). It covers the frozen core (`engine`), the knowledge base, command binding, the frontends (`bash-frontend`, `powershell-frontend`, `javascript-frontend`), the analysis facade, and the CLI.
 
 ```
 specs/
@@ -41,6 +41,7 @@ specs/
 │   │   ├── README.md               bash frontend overview
 │   │   ├── parse-normalize.md      parse + normalize detail
 │   │   └── abstract-exec.md        abstract execution detail
+│   ├── javascript-frontend.md      bounded JavaScript values/control flow (front/js)
 │   ├── powershell-frontend.md      the PowerShell frontend (front/ps)
 │   ├── analysis-report.md          composition facade + report + corpus harness
 │   ├── policy.md                   configurable report decisions
@@ -75,6 +76,7 @@ Specs are organized by domain, never by this layout. The mapping of a domain to 
 | `domains/binding.md` | `bind/` |
 | `domains/bash-frontend/` | `front/bash/` |
 | `domains/powershell-frontend.md` | `front/ps/` |
+| `domains/javascript-frontend.md` | `front/js/` |
 | `domains/analysis-report.md` | `internal/analysis/`, `internal/corpus/`, `api/` |
 | `domains/policy.md` | `policy/` |
 | `domains/cli.md` | `cmd/flowsh/` |

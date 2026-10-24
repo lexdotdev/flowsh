@@ -89,6 +89,8 @@ const (
 	LangPOSIX = analysis.LangPOSIX
 	// LangPowerShell is PowerShell cmdlet syntax (canonical name "posh").
 	LangPowerShell = analysis.LangPowerShell
+	// LangJavaScript is the bounded JavaScript source dialect.
+	LangJavaScript = analysis.LangJavaScript
 )
 
 // Langs is every supported dialect, in canonical order. It is a defensive copy
@@ -97,7 +99,8 @@ const (
 var Langs = append([]analysis.Lang(nil), analysis.Langs...)
 
 // ParseLang maps a user-supplied language name onto a Lang, accepting the
-// canonical spellings ("bash", "posix", "posh") plus their common aliases.
+// canonical spellings ("bash", "posix", "posh", "js") plus their common
+// aliases, trimmed and case-insensitive.
 func ParseLang(s string) (Lang, error) { return analysis.ParseLang(s) }
 
 // Analyze runs the full pipeline for lang over src using the process-wide

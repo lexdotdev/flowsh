@@ -1,4 +1,4 @@
-# ADR-0018: The determinism gate tolerates a parse-budget ⊤
+# ADR-0019: The determinism gate tolerates a parse-budget ⊤
 
 ## Status
 

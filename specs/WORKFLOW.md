@@ -10,7 +10,7 @@ Specifications are the **source of truth** about the intended behavior of the sy
 
 - A discrepancy between a spec and the code = a bug (in the code or in the spec — determine by context).
 - Specs are optimized for **AI agents**: predictable structure, explicit cross-references, no filler prose.
-- Organized by **domains** (conceptual areas), NOT by repository file structure. flowsh's domains are `engine` (the frozen core), `knowledge-base`, `binding`, `bash-frontend` and `powershell-frontend` (the two frontends), `analysis-report`, and `cli`.
+- Organized by **domains** (conceptual areas), NOT by repository file structure. flowsh's domains are `engine` (the frozen core), `knowledge-base`, `binding`, `bash-frontend`, `powershell-frontend` and `javascript-frontend` (bounded JS values/control flow; Node API effects remain unmodelled), `analysis-report`, and `cli`.
 - **Contracts** are a separate first-class entity for describing boundaries between layers.
 
 ---
@@ -23,7 +23,7 @@ Open `specs/INDEX.md`. It contains a "task → specs" table that maps common tas
 
 ### Step 2: Domain README
 
-Every domain with multiple files has a `README.md` — the entry point. In flowsh those are `domains/engine/README.md` and `domains/bash-frontend/README.md`; the single-file domains are `domains/knowledge-base.md`, `domains/binding.md`, `domains/powershell-frontend.md`, `domains/analysis-report.md` and `domains/cli.md`. A domain README contains:
+Every domain with multiple files has a `README.md` — the entry point. In flowsh those are `domains/engine/README.md` and `domains/bash-frontend/README.md`; the single-file domains are `domains/knowledge-base.md`, `domains/binding.md`, `domains/powershell-frontend.md`, `domains/javascript-frontend.md`, `domains/analysis-report.md` and `domains/cli.md`. A domain README contains:
 
 - Purpose
 - Key Files (key source files)
@@ -146,7 +146,7 @@ After updating, verify:
 1. Run the CLI: `go run ./cmd/flowsh --lang bash --json '<command>'`.
 2. Read `domains/engine/scoring.md` — the `WhyTrace`/`WhyStep`/`Atom` vocabulary explains each effect. If the reasoning is undocumented, look at `domains/binding.md` (name resolution) and the frontend spec that emitted it.
 
-### "Add a new input dialect" (domains: `bash-frontend`/`powershell-frontend` and `analysis-report`)
+### "Add a new input dialect" (domains: `bash-frontend`/`powershell-frontend`/`javascript-frontend` and `analysis-report`)
 
 1. Read `domains/bash-frontend/README.md` and `domains/powershell-frontend.md` — the frontend contract (parse → normalize/lower → `[]engine.Effect`, degrade to ⊤ on failure).
 2. Read `domains/analysis-report.md` and `contracts/frontend-engine.md` — dialects are registered as `Lang` values and routed in the facade.
@@ -212,7 +212,7 @@ For flows and architecture — ASCII art (not Mermaid), to work without a render
 source text
    │  parse + normalize / lower
    ▼
-front/bash   front/ps
+front/bash   front/ps   front/js
    │  normalized Call            │  lowered effects
    ▼                             │
 bind  ◀── kb (command signatures)│

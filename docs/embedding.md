@@ -84,7 +84,7 @@ validation) return errors.
 
 The dialect is an `api.Lang`. Use the constants, or map a user-supplied name
 through `api.ParseLang` (which accepts the canonical spellings and their aliases
-(`sh`/`shell`, `ps`/`pwsh`/`powershell`), trimmed and case-insensitive):
+(`sh`/`shell`, `ps`/`pwsh`/`powershell`, `javascript`/`node`/`nodejs`), trimmed and case-insensitive):
 
 ```go
 lang, err := api.ParseLang("ps") // → api.LangPowerShell
@@ -94,7 +94,17 @@ rep, err := api.Analyze(lang, src)
 ```
 
 `api.Langs` lists every supported dialect in canonical order; the constants are
-`api.LangBash`, `api.LangPOSIX` and `api.LangPowerShell`.
+`api.LangBash`, `api.LangPOSIX`, `api.LangPowerShell`, and `api.LangJavaScript`.
+
+`api.LangJavaScript` (`"js"`) evaluates a bounded statement/expression subset.
+Pure understood source (including empty library source) returns `effects: []`
+without uncertainty flags: it validates, but `Covered()` is false and policy
+denies it with `uncovered_report`. Unmodelled calls and execution return
+`CodeExec(⊤)` with `Conservative` true; parse/budget failures also set `Top`.
+The report uses shared scoring and source-located explanations. Call-specific
+metadata remains empty until the JS binder lands. Uncertainty still denies by
+default and can require Review, never Allow. No Node API effects or function
+invocation semantics are implemented.
 
 ## Options: source marker and provider selection
 
@@ -115,6 +125,9 @@ rep, err := api.AnalyzeWith(api.LangPowerShell, src, api.Options{
   `api.Bool(true)`/`api.Bool(false)` forces the Registry provider on/off
   regardless of the host.
 
+`Options.Root` is honored for JavaScript. `Options.Windows` remains
+PowerShell-only and `Options.Vars` remains bash/POSIX-only; JS ignores both.
+
 ## Exported surface
 
 Every symbol below is a **type alias**, a **copied constant**, or a
@@ -124,7 +137,7 @@ own, so an embedding caller sees exactly the CLI's report contract.
 | Kind | Symbols |
 | ---- | ------- |
 | Types (aliases) | `Lang`, `Report`, `DestructiveFinding`, `Analyzer`, `Options` |
-| Constants | `ToolName`, `SchemaVersion`, `ToolVersion`, `RootArgument`, `RootStdin`, `LangBash`, `LangPOSIX`, `LangPowerShell` |
+| Constants | `ToolName`, `SchemaVersion`, `ToolVersion`, `RootArgument`, `RootStdin`, `LangBash`, `LangPOSIX`, `LangPowerShell`, `LangJavaScript` |
 | Variables | `Langs` |
 | Functions | `ParseLang`, `Analyze`, `AnalyzeWith`, `NewAnalyzer`, `Bool` |
 | Methods | `(*Report).Encode`, `(*Report).Validate`, `(*Report).Covered`, `(*Report).HasTop`, `(*Analyzer).Analyze`, `(*Analyzer).AnalyzeWith` |

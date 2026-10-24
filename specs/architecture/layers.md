@@ -3,8 +3,8 @@
 ## Context
 
 The repository is a single Go module (`github.com/v0lka/flowsh`, see `go.mod`)
-that analyses a shell or PowerShell command and reports the observable effects
-it implies. The value of the analysis rests on a hard structural guarantee: the
+that analyses a shell, PowerShell, or JavaScript program and reports the
+observable effects it implies. The value of the analysis rests on a hard structural guarantee: the
 frontend-agnostic core must stay independent of every frontend and of every
 command signature dataset. That guarantee is what lets a new shell frontend be
 added without touching the core, and it is enforced mechanically by a test, not
@@ -24,14 +24,15 @@ a responsibility belongs to exactly one layer.
 | Knowledge base | `kb/` | `engine` | Hold the hand-verified command/parameter→effect dataset and the destructive-flags table; lower a matched parameter to an `engine.Effect`. |
 | Shell frontend | `front/bash/` | `engine` | Parse shell source and abstractly execute it, emitting the effects the shell itself contributes and delegating ordinary commands through a resolver seam. |
 | PowerShell frontend | `front/ps/` | `engine` | Parse PowerShell source and lower it into the effect IR, using its own alias/cmdlet tables. |
+| JavaScript frontend | `front/js/` | `engine` | Parse/evaluate bounded JavaScript values and control flow; calls degrade until models exist. |
 | Binding | `bind/` | `engine`, `kb`, `front/bash` | Resolve an invoked name and bind its flags/operands against the knowledge base, producing `[]engine.Effect`. |
-| Composition | `internal/analysis/` | `engine`, `bind`, `front/bash`, `front/ps` | Wire the two frontends, the binder and the core into one deterministic `Report`; the single facade behind the CLI and the embedding API. |
+| Composition | `internal/analysis/` | `engine`, `bind`, `front/bash`, `front/ps`, `front/js` | Wire the frontends, the binder and the core into one deterministic `Report`; the single facade behind the CLI and the embedding API. |
 | Public API | `api/` | `internal/analysis` | Re-export the facade as an embeddable Go API — type aliases, copied constants and forwarding functions only; holds no behaviour of its own ([ADR-0010](../decisions/0010-public-embedding-api.md)). |
 | Policy | `policy/` | `api`, `engine` | Evaluate reports using caller-owned rules; return a decision without changing or executing the analysis ([ADR-0017](../decisions/0017-report-policy-package.md)). |
 | CLI | `cmd/flowsh/` | `api`, `engine` | Parse arguments, read the command, call the facade through `api`, and print a text summary or JSON report. |
 
 The import edges above are derived from the package imports in
-`engine/*.go`, `kb/*.go`, `front/bash/*.go`, `front/ps/*.go`, `bind/*.go`,
+`engine/*.go`, `kb/*.go`, `front/bash/*.go`, `front/ps/*.go`, `front/js/*.go`, `bind/*.go`,
 `internal/analysis/*.go`, `api/api.go`, `policy/policy.go` and `cmd/flowsh/main.go`.
 
 ## The one-way import graph
@@ -73,6 +74,12 @@ Imports point strictly downward; there are no cycles and no upward edges.
  └────────────────────────────────────────────────────┘
 ```
 
+The JavaScript sibling follows the same downward edges:
+
+```
+internal/analysis ──► front/js ──► engine
+```
+
 Key properties of the graph:
 
 - `policy` sits above `api`, as a separate public report consumer. No analysis package imports it; configuration cannot change parsing, effects, or scoring. [ADR-0017](../decisions/0017-report-policy-package.md) amends ADR-0010's sole-public-surface framing while retaining `api` as the thin analysis entry point. See the [policy domain](../domains/policy.md).
@@ -84,13 +91,14 @@ Key properties of the graph:
   nor another core package of this module.
 - `kb` lowers into `engine` and is never imported by it (`kb/schema.go` package
   doc: "the core never imports kb").
+- `front/js` is another sibling, importing `engine` and the pinned parser. Its bounded evaluator owns per-analysis state; call modeling remains deferred to the invocation and Node API milestones.
 - `front/bash` and `front/ps` are siblings; neither imports the other, and
   neither imports `kb` or `bind`. The PowerShell frontend has "its own alias
   table and its own cmdlet→effect mapping" (`front/ps/parse.go`).
 - `bind` is a sibling of `engine`, not part of it, precisely because it must
   import `front/bash` (`bind/bind.go`: "This is why the package is a sibling of
   engine rather than a file inside it").
-- `internal/analysis` is the only package that imports both frontends, so the
+- `internal/analysis` is the only package that imports all three frontends, so the
   composition of frontends + binder + engine can only live above them
   (`internal/analysis/analyze.go`: "the composition of frontends + binder +
   engine can only live above them").
@@ -149,8 +157,8 @@ binding").
 - `kb` imports `engine` and no other package of this module.
 - `bind` is the only package that imports `front/bash` together with `kb`; it
   imports `engine`, `kb` and `front/bash`.
-- `internal/analysis` is the only package that imports both `front/bash` and
-  `front/ps`.
+- `internal/analysis` is the only package that composes `front/bash`,
+  `front/ps`, and `front/js`.
 - The only channel by which the shell frontend receives command effects is the
   `Resolver` seam; `front/bash` holds no reference to `bind`, `kb` or the
   knowledge base.

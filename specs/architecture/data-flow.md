@@ -2,15 +2,16 @@
 
 ## Context
 
-Both supported dialects end in the same place — a `analysis.Report` whose
+All registered dialects end in the same place — a `analysis.Report` whose
 `effects` are the frozen `engine.Effect` IR and whose `score` is the composite
-`engine.Score` — but they reach it along two different paths. Bash is analysed by
+`engine.Score` — but they reach it along three frontend paths. Bash is analysed by
 *abstract execution*: the frontend walks the syntax tree with an abstract state
 and interprets control flow, pipelines and redirections, asking the binding layer
 for the effects of ordinary commands. PowerShell is analysed by *lowering*: the
 frontend folds a normalized AST directly into effects, with no abstract state and
-no binder. This document traces both paths end to end, then the shared
-resolution, scoring, facade and CLI stages.
+no binder. This document traces all three paths end to end, then the shared
+resolution, scoring, facade and CLI stages. JavaScript adds a third bounded parsing/evaluation path: pure values and control
+flow are evaluated; calls and unmodelled execution degrade to top.
 
 ## Bash path: parse → normalize / abstract-exec → bind
 
@@ -129,6 +130,22 @@ The PowerShell frontend consults **its own** tables — `ps.Aliases`
 effects already carry `Mode`/`Certainty` chosen through `effectOf` /
 `certaintyOf` (`front/ps/parse.go`).
 
+## JavaScript path: bounded semantic kernel
+
+```
+JavaScript source -> pinned parser -> owned normalized nodes
+                 -> bounded values/state/completion evaluator
+                 -> effects + source-located derivations + uncertainty
+                 -> analyzeJS -> shared normalization/scoring/why/canonical
+```
+
+Calls and unsupported execution remain top; pure understood input can have
+zero effects and stays uncovered under policy. Whole-unit parse/budget failures
+set Top. Function bodies are retained without invocation. Input/root are
+preserved; Vars and Windows are ignored; command binding metadata remains empty
+until the binder milestone.
+See [JavaScript Frontend](../domains/javascript-frontend.md).
+
 ## Shared resolution and binding (`bind`)
 
 `bind.Binder.resolve` (`bind/resolve.go`) answers "which command does this
@@ -204,12 +221,13 @@ the language:
 `engine.Report.Normalize` (`engine/report.go`), which merges effects sharing
 `(Kind, Mode)` and sorts them — so two reports built from the same effects
 normalise to byte-identical JSON. `analyzePS` is a free function (no binder
-needed); `analyzeBash` uses the process-wide `bind.Binder` memoised by
+needed); `analyzeJS` is also a free function and scores the bounded evaluator result
+without command tokens. `analyzeBash` uses the process-wide `bind.Binder` memoised by
 `defaultAnalyzer`.
 
 ## CLI (`cmd/flowsh`)
 
-`main.run` (`cmd/flowsh/main.go`) parses flags (`--lang bash|posix|posh|auto`,
+`main.run` (`cmd/flowsh/main.go`) parses flags (`--lang bash|posix|posh|js|auto`,
 `--file PATH`, `--batch`, `--json`, `--explain`/`--why`, `--windows[=bool]`,
 `--version`, `-h`), reads the command from `--file`, the positional argument, or
 stdin, resolves the language (`api.ParseLang`, or `detectLang` for `auto`,
@@ -242,7 +260,7 @@ read, or was empty).
 
 ## Invariants
 
-- A source produces exactly one `analysis.Report`; both dialects terminate at
+- A source produces exactly one `analysis.Report`; all dialects terminate at
   `internal/analysis`'s `Report`.
 - The bash path reaches command effects only through the injected `Resolver`
   seam; the PowerShell path reaches them only through its own alias/cmdlet

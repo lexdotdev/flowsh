@@ -110,7 +110,7 @@ loader picks it up automatically. Each case is:
 | `id` | Stable and unique across the whole corpus. |
 | `group` | One of `guardfall`, `destructive`, `benign`, `ps`. |
 | `category` | `A`–`E` **iff** `group` is `guardfall`; must be absent otherwise. |
-| `lang` | The dialect the input is written in (`bash`, `posix`, `posh`). |
+| `lang` | The dialect the input is written in (`bash`, `posix`, `posh`, `js`). |
 | `input` | The command source text. |
 | `note` | Free-form documentation of the case's intent. |
 

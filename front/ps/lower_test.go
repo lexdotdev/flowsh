@@ -332,7 +332,7 @@ func TestParseTimeoutYieldsTop(t *testing.T) {
 
 	// The budget wording is a contract: the embedding determinism gate tells a
 	// host-load trip from a real nondeterminism by this fragment
-	// (`parseBudgetReasonFragment` in `api/api_test.go`, ADR-0018), so a
+	// (`parseBudgetReasonFragment` in `api/api_test.go`, ADR-0019), so a
 	// rewording has to be a deliberate, test-visible change. Pin it on a source
 	// that stays inside the structural bounds, where only the budget can stop
 	// the parse.

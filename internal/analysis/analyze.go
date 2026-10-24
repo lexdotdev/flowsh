@@ -1,7 +1,7 @@
 // Package analysis is the shared analysis facade behind the flowsh CLI and
-// the regression harness. It is the single place that wires the two frontends
-// (front/bash, front/ps), the knowledge-base binder (bind) and the frozen core
-// (engine) into one deterministic, serialisable report.
+// the regression harness. It is the single place that wires the frontends
+// (front/bash, front/ps, front/js), the knowledge-base binder (bind) and the
+// frozen core (engine) into one deterministic, serialisable report.
 //
 // It lives under internal/ because it is not part of the public core: the core
 // (engine) must stay frontend-free (see TestCoreDoesNotImportFrontends), so the
@@ -19,6 +19,7 @@ import (
 	"github.com/v0lka/flowsh/bind"
 	"github.com/v0lka/flowsh/engine"
 	"github.com/v0lka/flowsh/front/bash"
+	"github.com/v0lka/flowsh/front/js"
 	"github.com/v0lka/flowsh/front/ps"
 )
 
@@ -64,13 +65,16 @@ const (
 	// LangPowerShell is PowerShell cmdlet syntax (named/positional parameters).
 	// The canonical name is "posh", matching the CLI's --lang value.
 	LangPowerShell Lang = "posh"
+	// LangJavaScript is the bounded JavaScript source dialect.
+	LangJavaScript Lang = "js"
 )
 
 // Langs is every supported dialect, in canonical order.
-var Langs = []Lang{LangBash, LangPOSIX, LangPowerShell}
+var Langs = []Lang{LangBash, LangPOSIX, LangPowerShell, LangJavaScript}
 
 // ParseLang maps a user-supplied language name onto a Lang, accepting the
-// canonical spellings ("bash", "posix", "posh") plus their common aliases.
+// canonical spellings ("bash", "posix", "posh", "js") plus their common
+// aliases, trimmed and case-insensitive.
 func ParseLang(s string) (Lang, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "bash", "shell":
@@ -79,8 +83,10 @@ func ParseLang(s string) (Lang, error) {
 		return LangPOSIX, nil
 	case "posh", "ps", "pwsh", "powershell":
 		return LangPowerShell, nil
+	case "js", "javascript", "node", "nodejs":
+		return LangJavaScript, nil
 	default:
-		return "", fmt.Errorf("flowsh: unknown language %q (want bash|posix|posh)", s)
+		return "", fmt.Errorf("flowsh: unknown language %q (want bash|posix|posh|js)", s)
 	}
 }
 
@@ -108,7 +114,8 @@ type Report struct {
 	// Resolution is the aggregated name-resolution outcome across the program's
 	// calls: which command the invocation(s) actually named. It is the zero
 	// value (empty Kind) when no call reached the binder — e.g. on the
-	// PowerShell path, which resolves through its own alias/cmdlet tables.
+	// PowerShell path, which resolves through its own alias/cmdlet tables, and
+	// on the JavaScript path, which has no effect binder yet.
 	Resolution bind.Resolution `json:"resolution"`
 	// CommandCalls is the per-command resolution view: every distinct call the
 	// binder saw, with its invoked name, its normalized binary (basename,
@@ -338,7 +345,7 @@ type Options struct {
 	// concrete value instead of degrading its word (and every path derived
 	// from it) to ⊤. The zero value (nil) is identical to Analyze: nothing is
 	// seeded and unknown variables stay ⊤. Only the bash/POSIX frontends
-	// consume the table; the PowerShell path ignores it.
+	// consume the table; the PowerShell and JavaScript paths ignore it.
 	Vars map[string]string
 }
 
@@ -381,13 +388,15 @@ func (a *Analyzer) Analyze(lang Lang, src string) *Report {
 	return a.AnalyzeWith(lang, src, Options{})
 }
 
-// AnalyzeWith runs the full pipeline for lang over src: for bash, parse and
-// abstractly execute with the knowledge-base resolver; for PowerShell, parse
-// and lower with the provider configuration opts selects. It is total and
-// deterministic — the frontends degrade to ⊤ rather than fail — so the returned
-// report is never nil.
+// AnalyzeWith runs the full pipeline for lang over src.
+// Bash uses abstract execution with the knowledge-base resolver;
+// PowerShell lowers with opts; JavaScript evaluates a bounded subset.
+// The pipeline is total and deterministic. Unsupported input degrades
+// to top, and the returned report is never nil.
 func (a *Analyzer) AnalyzeWith(lang Lang, src string, opts Options) *Report {
 	switch lang {
+	case LangJavaScript:
+		return analyzeJS(src, opts.Root)
 	case LangPowerShell:
 		return analyzePS(src, opts.psOptions(), opts.Root)
 	case LangPOSIX:
@@ -542,7 +551,24 @@ func analyzePS(src string, opts ps.Options, root string) *Report {
 	return rep
 }
 
-// newReport builds the report skeleton common to both dialects. root names the
+// analyzeJS assembles a report from bounded JavaScript evaluation.
+func analyzeJS(src, root string) *Report {
+	res := js.AnalyzeWith(sourceName(root, "script"), src, nil)
+	rep := newReport(LangJavaScript, src, root)
+	rep.Effects = normalizeEffects(res.Effects)
+	rep.Score = engine.ScoreEffects(rep.Effects)
+	rep.Destructiveness = rep.Score.Destructiveness
+	rep.Why = buildWhy(rep.Effects, res.Derivations, engine.Atom{Kind: engine.AtomLiteral, Text: "js-opaque"})
+	rep.Top = res.Top
+	rep.Conservative = res.Conservative
+	rep.Reason = res.Reason
+	if len(rep.Effects) > 0 {
+		rep.Canonical = buildCanonical(rep.Effects, nil)
+	}
+	return rep
+}
+
+// newReport builds the report skeleton common to every dialect. root names the
 // source the input came from (a file path or a stdin/argument marker); it is
 // omitted when empty.
 func newReport(lang Lang, src, root string) *Report {
@@ -557,9 +583,8 @@ func newReport(lang Lang, src, root string) *Report {
 	}
 }
 
-// sourceName picks the source name a frontend records positions against: the
-// caller's root when set, else the historical default ("script" for bash,
-// "flowsh" for PowerShell) so a rootless analysis is unchanged.
+// sourceName uses the caller's root or the dialect default:
+// "script" for Bash and JavaScript, "flowsh" for PowerShell.
 func sourceName(root, def string) string {
 	if root == "" {
 		return def

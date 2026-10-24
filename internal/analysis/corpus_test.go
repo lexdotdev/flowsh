@@ -56,9 +56,9 @@ func analyzeCase(t *testing.T, a *Analyzer, c corpus.Case) *Report {
 }
 
 // TestGuardFallCoverage is acceptance criterion 2: every GuardFall case of
-// classes A-E, in both dialects, is classified as "effect present or ⊤" — there
-// are zero silent misses. It also pins that each dialect actually exercises
-// every class A-E, so the suite cannot pass vacuously.
+// classes A-E, in every registered dialect, is classified as "effect present
+// or ⊤" — there are zero silent misses. It also pins that each dialect
+// actually exercises every class A-E, so the suite cannot pass vacuously.
 func TestGuardFallCoverage(t *testing.T) {
 	a := mustAnalyzer(t)
 	cases := corpus.Filter(mustCorpus(t), corpus.GroupGuardFall)

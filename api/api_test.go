@@ -34,12 +34,13 @@ var probe = []probeCase{
 	{"posix read", api.LangPOSIX, `cat /etc/passwd`},
 	{"posh secret read", api.LangPowerShell, `Get-Content ~/.aws/credentials`},
 	{"posh write", api.LangPowerShell, `Set-Content x y`},
+	{"js unsupported call", api.LangJavaScript, `unknown();`},
 }
 
-// TestExportedSurfaceAnalyze drives Analyze for bash, posix and posh through the
-// public package and pins the report contract an embedder relies on: non-empty
-// effects, the tool/schema versions, the stamped language, and canonical valid
-// JSON that round-trips through api.Report.
+// TestExportedSurfaceAnalyze drives Analyze for bash, posix, posh and js
+// through the public package and pins the report contract an embedder relies
+// on: non-empty covered effects, the tool/schema versions, the stamped
+// language, and canonical valid JSON that round-trips through api.Report.
 func TestExportedSurfaceAnalyze(t *testing.T) {
 	for _, p := range probe {
 		t.Run(p.name, func(t *testing.T) {
@@ -116,6 +117,10 @@ func TestExportedParseLang(t *testing.T) {
 		"ps":         api.LangPowerShell,
 		"pwsh":       api.LangPowerShell,
 		"PowerShell": api.LangPowerShell,
+		"js":         api.LangJavaScript,
+		"JavaScript": api.LangJavaScript,
+		"  NODE  ":   api.LangJavaScript,
+		"nodejs":     api.LangJavaScript,
 	}
 	for in, exp := range want {
 		got, err := api.ParseLang(in)
@@ -254,17 +259,16 @@ func TestExportedAnalyzeWithOptionsVars(t *testing.T) {
 // TestAnalyzeConcurrentMatchesSequential is the load-bearing test for the race
 // step: many goroutines call api.Analyze (which reaches the process-wide
 // sync.OnceValues analyser singleton) concurrently, and every result must be a
-// byte-for-byte match of the same input analysed sequentially. It is declared
-// first in this file so it is also the first caller of api.Analyze in the test
-// binary, making the goroutines race the one-time knowledge-base load as well as
-// the subsequent concurrent use of the shared analyser.
+// byte-for-byte match of the same input analysed sequentially, so the
+// goroutines race the one-time knowledge-base load as well as the subsequent
+// concurrent use of the shared analyser.
 //
 // Exactly one outcome is excluded from the byte-identity claim: a PowerShell
 // parse runs under a wall-clock budget (front/ps.DefaultTimeoutMicros), so on a
 // loaded host the budget can expire for a benign 15-byte source and the analysis
 // answers ⊤. That is the *sound* direction — ⊤ is the top element, and the
 // report stays covered and conservative — and it is a property of the host, not
-// of the analyser's determinism, so it is classified separately (ADR-0018): the
+// of the analyser's determinism, so it is classified separately (ADR-0019): the
 // input is re-analysed sequentially and the trip is tolerated only when the
 // reference report comes back. A concrete result that still differs, or a ⊤ for
 // any other reason (a panic, a grammar failure), stays a real mismatch and

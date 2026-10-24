@@ -1,7 +1,9 @@
 # flowsh
 
-`flowsh` is a static effect analyser for shell and PowerShell scripts. Give it a
-command line, in bash/POSIX or PowerShell, and it reports the observable effects
+`flowsh` is a static effect analyser for shell and PowerShell scripts, with a
+bounded JavaScript value/control-flow frontend: Node API calls remain
+conservative until effect coverage lands. Give it a command line, in bash/POSIX or
+PowerShell, and it reports the observable effects
 that command implies without running it: filesystem access, environment changes,
 network traffic, process control, credential access, code execution, and more.
 It also produces a composite risk score, a destructiveness rating, and any
@@ -14,7 +16,9 @@ sandbox and agent guardrails, and security triage of untrusted command strings.
 - **Static.** It parses and reasons about the command; it never runs it.
 - **Conservative.** Where the analysis cannot bound an input, it degrades to the
   top element (⊤) and says so, instead of guessing or missing it.
-- **Two dialects.** bash/POSIX and PowerShell in one binary.
+- **Shell dialects.** bash/POSIX and PowerShell in one binary.
+- **JavaScript values and control flow.** A bounded subset is evaluated statically;
+  function calls and Node API effects remain conservative.
 - **Two output formats.** A JSON report or a one-screen summary.
 
 The module is `github.com/v0lka/flowsh`; the public binary is `flowsh`.
@@ -83,9 +87,9 @@ Use the optional `github.com/v0lka/flowsh/policy` package to evaluate reports wi
 ## Usage
 
 ```
-flowsh [--lang bash|posix|posh|auto] [--json] [--windows] '<command>'
-echo '<command>' | flowsh [--lang bash|posix|posh|auto] [--json] [--windows]
-flowsh --batch [--lang bash|posix|posh|auto] [--windows]
+flowsh [--lang bash|posix|posh|js|auto] [--json] [--windows] '<command>'
+echo '<command>' | flowsh [--lang bash|posix|posh|js|auto] [--json] [--windows]
+flowsh --batch [--lang bash|posix|posh|js|auto] [--windows]
 ```
 
 The command may be passed as a positional argument or on stdin.
@@ -94,7 +98,7 @@ The command may be passed as a positional argument or on stdin.
 
 | Flag | Meaning |
 | --- | --- |
-| `--lang bash\|posix\|posh\|auto` | Dialect of the input. Default: `bash`. Canonical dialects: `bash`, `posix`, `posh`; aliases: `sh`/`shell`, `ps`/`pwsh`/`powershell`; `auto` sniffs the dialect. |
+| `--lang bash\|posix\|posh\|js\|auto` | Dialect of the input. Default: `bash`. Canonical dialects: `bash`, `posix`, `posh`, `js`; aliases: `sh`/`shell`, `ps`/`pwsh`/`powershell`, `javascript`/`node`/`nodejs`; `auto` selects bash or PowerShell only. JS evaluates a bounded subset; calls and unsupported execution report ⊤. Pure programs may produce uncovered empty-effect reports. |
 | `--json` | Emit the full JSON report instead of the human summary. |
 | `--batch` | Read many commands, one per line, and write one compact JSON report per line (NDJSON). |
 | `--explain`, `--why` | Print the why-trace explaining each reported effect. |

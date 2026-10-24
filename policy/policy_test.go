@@ -116,6 +116,40 @@ func TestNoEffectReportsDenyAsUncovered(t *testing.T) {
 	}
 }
 
+func TestJavaScriptReportsUseUncertaintyRules(t *testing.T) {
+	r, err := api.Analyze(api.LangJavaScript, "unknown();")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Unknown execution still grades Critical.
+	if r.Score.Grade != engine.DestructCritical {
+		t.Fatalf("grade = %v, want %v", r.Score.Grade, engine.DestructCritical)
+	}
+	for _, tc := range []struct {
+		name   string
+		config policy.Config
+		want   policy.Action
+	}{
+		{"defaults", policy.Config{}, policy.Deny},
+		{"review", policy.Config{
+			Unknown: policy.Review, Conservative: policy.Review,
+			Effects: map[engine.EffectKind]policy.Action{engine.KindCodeExec: policy.Allow},
+			Grades:  map[engine.Destructiveness]policy.Action{engine.DestructCritical: policy.Allow},
+		}, policy.Review},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newPolicy(t, tc.config).Evaluate(r)
+			if d.Action != tc.want || d.Allowed() {
+				t.Fatalf("got %+v, want %s", d, tc.want)
+			}
+			want := []policy.Match{{Code: "conservative", Action: policy.Review}, {Code: "unknown", Action: tc.want}}
+			if !slices.Equal(d.Matches, want) {
+				t.Fatalf("got matches %+v, want %+v", d.Matches, want)
+			}
+		})
+	}
+}
+
 func TestUncertaintyCannotBeAllowed(t *testing.T) {
 	for _, top := range []bool{false, true} {
 		r := report(engine.KindCodeExec)
@@ -244,5 +278,16 @@ func TestAnalysisIntegration(t *testing.T) {
 				t.Fatalf("got %+v, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestJavaScriptPureReportsRemainUncovered(t *testing.T) {
+	r, err := api.Analyze(api.LangJavaScript, "const x=1;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := newPolicy(t, policy.Config{}).Evaluate(r)
+	if d.Action != policy.Deny || len(d.Matches) != 1 || d.Matches[0].Code != "uncovered_report" {
+		t.Fatalf("pure JS must retain the uncovered-report policy: %+v", d)
 	}
 }
