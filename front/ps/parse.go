@@ -477,6 +477,16 @@ func ParseTimeout(name, src string, timeoutMicros uint64) (prog *Program) {
 		return topProgram(name, src, Pos{}, "parser returned no tree")
 	}
 	if tree.ParseStoppedEarly() {
+		// A timeout the parser's own budget clock observed (rather than the
+		// wall-clock wrapper in parseWithBudget) is the same exhausted budget,
+		// so it carries the same canonical wording: the embedding determinism
+		// gate classifies a ⊤ as a host-load trip by the "µs budget" fragment
+		// (api/api_test.go, ADR-0019), and a differently-worded timeout would
+		// be reported as a nondeterminism. Other stop reasons keep the generic
+		// wording.
+		if tree.ParseStopReason() == gotreesitter.ParseStopTimeout {
+			return topProgram(name, src, Pos{}, fmt.Sprintf("parse exceeded its %d µs budget: treating source as ⊤", timeoutMicros))
+		}
 		return topProgram(name, src, Pos{}, fmt.Sprintf("parse stopped early (%s): treating source as ⊤", tree.ParseStopReason()))
 	}
 
